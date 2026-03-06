@@ -1,0 +1,690 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>720</width>
+    <height>680</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>pbRecorder</string>
+  </property>
+  <widget class="QWidget" name="centralWidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <property name="spacing">
+     <number>8</number>
+    </property>
+    <property name="leftMargin">
+     <number>8</number>
+    </property>
+    <property name="topMargin">
+     <number>8</number>
+    </property>
+    <property name="rightMargin">
+     <number>8</number>
+    </property>
+    <property name="bottomMargin">
+     <number>8</number>
+    </property>
+
+    <!-- Preset Row -->
+    <item>
+     <layout class="QHBoxLayout" name="presetLayout">
+      <item>
+       <widget class="QLabel" name="presetLabel">
+        <property name="text">
+         <string>プリセット:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="presetCombo">
+        <property name="minimumSize">
+         <size>
+          <width>200</width>
+          <height>0</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="savePresetBtn">
+        <property name="text">
+         <string>保存</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="deletePresetBtn">
+        <property name="text">
+         <string>削除</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+
+    <!-- Source Selection Group -->
+    <item>
+     <widget class="QGroupBox" name="sourceGroupBox">
+      <property name="title">
+       <string>キャプチャソース</string>
+      </property>
+      <layout class="QGridLayout" name="sourceLayout">
+       <item row="0" column="0">
+        <widget class="QLabel" name="captureModeLabel">
+         <property name="text">
+          <string>モード:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1" colspan="2">
+        <widget class="QComboBox" name="captureModeCombo">
+         <item>
+          <property name="text">
+           <string>スクリーン</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>ウィンドウ</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>範囲指定</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="monitorLabel">
+         <property name="text">
+          <string>モニター:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1" colspan="2">
+        <widget class="QComboBox" name="monitorCombo"/>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="windowLabel">
+         <property name="text">
+          <string>ウィンドウ:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QComboBox" name="windowCombo">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>1</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="2">
+        <widget class="QPushButton" name="refreshWindowsBtn">
+         <property name="text">
+          <string>更新</string>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>80</width>
+           <height>16777215</height>
+          </size>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="regionLabel">
+         <property name="text">
+          <string>範囲:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <widget class="QLabel" name="regionInfoLabel">
+         <property name="text">
+          <string>未選択</string>
+         </property>
+         <property name="styleSheet">
+          <string>color: gray;</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="2">
+        <widget class="QPushButton" name="selectRegionBtn">
+         <property name="text">
+          <string>範囲選択</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+
+    <!-- Video + Audio Settings side by side -->
+    <item>
+     <layout class="QHBoxLayout" name="settingsLayout">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+
+      <!-- Video Settings -->
+      <item>
+       <widget class="QGroupBox" name="videoGroupBox">
+        <property name="title">
+         <string>映像設定</string>
+        </property>
+        <layout class="QGridLayout" name="videoLayout">
+         <item row="0" column="0">
+          <widget class="QLabel" name="videoCodecLabel">
+           <property name="text">
+            <string>コーデック:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1" colspan="2">
+          <widget class="QComboBox" name="videoCodecCombo">
+           <item>
+            <property name="text">
+             <string>H.264</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>WMV</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="containerLabel">
+           <property name="text">
+            <string>コンテナ:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1" colspan="2">
+          <widget class="QComboBox" name="containerCombo"/>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="fpsLabel">
+           <property name="text">
+            <string>FPS:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1" colspan="2">
+          <widget class="QSpinBox" name="fpsSpinBox">
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>240</number>
+           </property>
+           <property name="value">
+            <number>60</number>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0">
+          <widget class="QLabel" name="videoBitrateLabel">
+           <property name="text">
+            <string>ビットレート:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QSlider" name="videoBitrateSlider">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="minimum">
+            <number>500</number>
+           </property>
+           <property name="maximum">
+            <number>50000</number>
+           </property>
+           <property name="value">
+            <number>8000</number>
+           </property>
+           <property name="singleStep">
+            <number>500</number>
+           </property>
+           <property name="pageStep">
+            <number>2000</number>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="2">
+          <widget class="QSpinBox" name="videoBitrateSpinBox">
+           <property name="minimum">
+            <number>500</number>
+           </property>
+           <property name="maximum">
+            <number>50000</number>
+           </property>
+           <property name="value">
+            <number>8000</number>
+           </property>
+           <property name="suffix">
+            <string> kbps</string>
+           </property>
+           <property name="singleStep">
+            <number>500</number>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0">
+          <widget class="QLabel" name="videoQualityLabel">
+           <property name="text">
+            <string>品質:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1" colspan="2">
+          <widget class="QSlider" name="videoQualitySlider">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="minimum">
+            <number>0</number>
+           </property>
+           <property name="maximum">
+            <number>100</number>
+           </property>
+           <property name="value">
+            <number>70</number>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0" colspan="3">
+          <widget class="QCheckBox" name="realtimeEncodeCheck">
+           <property name="text">
+            <string>リアルタイムエンコード</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+
+      <!-- Audio Settings -->
+      <item>
+       <widget class="QGroupBox" name="audioGroupBox">
+        <property name="title">
+         <string>音声設定</string>
+        </property>
+        <layout class="QGridLayout" name="audioLayout">
+         <item row="0" column="0">
+          <widget class="QLabel" name="outputAudioLabel">
+           <property name="text">
+            <string>出力デバイス:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1" colspan="2">
+          <widget class="QComboBox" name="outputAudioCombo"/>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="inputAudioLabel">
+           <property name="text">
+            <string>入力デバイス:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1" colspan="2">
+          <widget class="QComboBox" name="inputAudioCombo"/>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="asioChannelLabel">
+           <property name="text">
+            <string>ASIOチャンネル:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QSpinBox" name="asioStartChSpin">
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>64</number>
+           </property>
+           <property name="value">
+            <number>1</number>
+           </property>
+           <property name="prefix">
+            <string>開始: </string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="2">
+          <widget class="QSpinBox" name="asioEndChSpin">
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>64</number>
+           </property>
+           <property name="value">
+            <number>2</number>
+           </property>
+           <property name="prefix">
+            <string>終了: </string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0">
+          <widget class="QLabel" name="audioCodecLabel">
+           <property name="text">
+            <string>コーデック:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1" colspan="2">
+          <widget class="QComboBox" name="audioCodecCombo"/>
+         </item>
+         <!-- Bitrate row (for AAC/MP3/WMA/Opus) -->
+         <item row="4" column="0">
+          <widget class="QLabel" name="audioBitrateLabel">
+           <property name="text">
+            <string>ビットレート:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1">
+          <widget class="QSlider" name="audioBitrateSlider">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="minimum">
+            <number>32</number>
+           </property>
+           <property name="maximum">
+            <number>512</number>
+           </property>
+           <property name="value">
+            <number>192</number>
+           </property>
+           <property name="singleStep">
+            <number>32</number>
+           </property>
+           <property name="pageStep">
+            <number>64</number>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="2">
+          <widget class="QSpinBox" name="audioBitrateSpinBox">
+           <property name="minimum">
+            <number>32</number>
+           </property>
+           <property name="maximum">
+            <number>512</number>
+           </property>
+           <property name="value">
+            <number>192</number>
+           </property>
+           <property name="suffix">
+            <string> kbps</string>
+           </property>
+           <property name="singleStep">
+            <number>32</number>
+           </property>
+          </widget>
+         </item>
+         <!-- Sample Rate row (for PCM) -->
+         <item row="5" column="0">
+          <widget class="QLabel" name="audioSampleRateLabel">
+           <property name="text">
+            <string>サンプリングレート:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="1" colspan="2">
+          <widget class="QComboBox" name="audioSampleRateCombo">
+           <item>
+            <property name="text">
+             <string>44100 Hz</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>48000 Hz</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>96000 Hz</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <!-- Bit Depth row (for PCM) -->
+         <item row="6" column="0">
+          <widget class="QLabel" name="audioBitDepthLabel">
+           <property name="text">
+            <string>ビット深度:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="1" colspan="2">
+          <widget class="QComboBox" name="audioBitDepthCombo">
+           <item>
+            <property name="text">
+             <string>16 bit</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>24 bit</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>32 bit (float)</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <!-- Vorbis Quality row -->
+         <item row="7" column="0">
+          <widget class="QLabel" name="vorbisQualityLabel">
+           <property name="text">
+            <string>品質:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="7" column="1" colspan="2">
+          <widget class="QSlider" name="vorbisQualitySlider">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="minimum">
+            <number>0</number>
+           </property>
+           <property name="maximum">
+            <number>10</number>
+           </property>
+           <property name="value">
+            <number>5</number>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+
+    <!-- Output Path -->
+    <item>
+     <widget class="QGroupBox" name="outputGroupBox">
+      <property name="title">
+       <string>出力</string>
+      </property>
+      <layout class="QHBoxLayout" name="outputLayout">
+       <item>
+        <widget class="QLineEdit" name="outputPathEdit">
+         <property name="placeholderText">
+          <string>出力ファイルパス...</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="browseBtn">
+         <property name="text">
+          <string>参照</string>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>80</width>
+           <height>16777215</height>
+          </size>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+
+    <!-- Record Controls -->
+    <item>
+     <layout class="QHBoxLayout" name="controlsLayout">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <item>
+       <widget class="QPushButton" name="recordBtn">
+        <property name="text">
+         <string>録画</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>120</width>
+          <height>48</height>
+         </size>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>14</pointsize>
+          <bold>true</bold>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string>QPushButton { background-color: #cc3333; color: white; border-radius: 6px; }
+QPushButton:hover { background-color: #ee4444; }
+QPushButton:disabled { background-color: #888888; }</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pauseBtn">
+        <property name="text">
+         <string>一時停止</string>
+        </property>
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>80</width>
+          <height>48</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="controlsSpacer">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="durationLabel">
+        <property name="text">
+         <string>00:00:00</string>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>16</pointsize>
+          <family>Consolas</family>
+         </font>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignRight|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="fileSizeLabel">
+        <property name="text">
+         <string>0 MB</string>
+        </property>
+        <property name="font">
+         <font>
+          <pointsize>10</pointsize>
+          <family>Consolas</family>
+         </font>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignRight|Qt::AlignVCenter</set>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>80</width>
+          <height>0</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusBar"/>
+  <widget class="QMenuBar" name="menuBar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>720</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title">
+     <string>ファイル</string>
+    </property>
+    <addaction name="actionSettings"/>
+    <addaction name="separator"/>
+    <addaction name="actionExit"/>
+   </widget>
+   <addaction name="menuFile"/>
+  </widget>
+  <action name="actionSettings">
+   <property name="text">
+    <string>設定...</string>
+   </property>
+  </action>
+  <action name="actionExit">
+   <property name="text">
+    <string>終了</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
