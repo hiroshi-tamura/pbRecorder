@@ -4,11 +4,9 @@
 #include <QRect>
 #include <QPoint>
 #include <QLabel>
+#include <QImage>
+#include <vector>
 
-/// Full-screen transparent overlay for selecting a rectangular capture region.
-/// Covers the entire virtual desktop (all monitors).
-/// Click and drag to draw a selection rectangle.
-/// Press Enter to confirm, Escape to cancel.
 class RegionSelectorWidget : public QWidget
 {
     Q_OBJECT
@@ -17,12 +15,10 @@ public:
     explicit RegionSelectorWidget(QWidget *parent = nullptr);
     ~RegionSelectorWidget() override;
 
-signals:
-    /// Emitted when the user confirms the selection (Enter key).
-    /// Coordinates are in physical (unscaled) pixels relative to the virtual desktop.
-    void regionSelected(int x, int y, int width, int height);
+    void setAutoAdjust(bool enabled) { autoAdjust_ = enabled; }
 
-    /// Emitted when the user cancels selection (Escape key).
+signals:
+    void regionSelected(int x, int y, int width, int height);
     void selectionCancelled();
 
 protected:
@@ -34,17 +30,19 @@ protected:
     void showEvent(QShowEvent *event) override;
 
 private:
-    /// Compute the virtual desktop geometry covering all screens.
     QRect virtualDesktopGeometry() const;
-
-    /// Convert widget-local coordinates to physical desktop pixels (DPI-aware).
     QRect toPhysicalPixels(const QRect &logicalRect) const;
-
-    /// Normalize the rect so width/height are positive.
     QRect normalizedSelection() const;
-
-    /// Update the dimension label position and text.
     void updateDimensionLabel();
+
+    // Auto-adjust (edge snapping)
+    void captureScreenImage();
+    void detectEdges();
+    int snapToEdge(int pos, bool horizontal) const;
+    QRect snapSelection(const QRect &sel) const;
+
+    enum Edge { EdgeNone, EdgeLeft, EdgeRight, EdgeTop, EdgeBottom };
+    Edge hitTestEdge(const QPoint &pos) const;
 
     bool selecting_ = false;
     bool hasSelection_ = false;
@@ -52,7 +50,17 @@ private:
     QPoint currentPos_;
 
     QLabel *dimensionLabel_ = nullptr;
-
-    // Device pixel ratio for DPI conversion
     qreal devicePixelRatio_ = 1.0;
+
+    // Auto-adjust state
+    bool autoAdjust_ = false;
+    QImage screenCapture_;
+    std::vector<int> horizontalEdges_; // Y positions of horizontal lines
+    std::vector<int> verticalEdges_;   // X positions of vertical lines
+    static constexpr int SNAP_DISTANCE = 12;
+
+    // Edge dragging
+    Edge hoveredEdge_ = EdgeNone;
+    Edge draggingEdge_ = EdgeNone;
+    QRect adjustedSelection_;
 };

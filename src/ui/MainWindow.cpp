@@ -206,6 +206,7 @@ void MainWindow::updateCaptureWidgetVisibility(int mode)
     ui->regionLabel->setVisible(showRegion);
     ui->regionInfoLabel->setVisible(showRegion);
     ui->selectRegionBtn->setVisible(showRegion);
+    ui->autoAdjustCheck->setVisible(showRegion);
 }
 
 // ============================================================================
@@ -476,6 +477,7 @@ void MainWindow::onRefreshWindows()
 void MainWindow::onSelectRegion()
 {
     auto *selector = new RegionSelectorWidget();
+    selector->setAutoAdjust(ui->autoAdjustCheck->isChecked());
     connect(selector, &RegionSelectorWidget::regionSelected,
             this, [this](int x, int y, int w, int h) {
         selectedRegion_ = {x, y, w, h};
