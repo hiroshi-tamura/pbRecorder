@@ -20,6 +20,7 @@
 #include <QSettings>
 #include <QInputDialog>
 #include <QDir>
+#include <QFileInfo>
 
 // ============================================================================
 // Construction / Destruction
@@ -506,8 +507,17 @@ void MainWindow::onBrowse()
 
     QString filter = getFilterForContainer(container);
 
+    // ダイアログに渡すパスのディレクトリが存在しなければデフォルトに戻す
+    QString initialPath = ui->outputPathEdit->text();
+    QFileInfo fi(initialPath);
+    if (!fi.dir().exists()) {
+        QString defaultDir = QCoreApplication::applicationDirPath() + "/Output";
+        QDir().mkpath(defaultDir);
+        initialPath = defaultDir + "/recording.mp4";
+    }
+
     QString path = QFileDialog::getSaveFileName(
-        this, tr("録画を保存"), ui->outputPathEdit->text(), filter);
+        this, tr("録画を保存"), initialPath, filter);
 
     if (!path.isEmpty()) {
         ui->outputPathEdit->setText(path);
