@@ -19,6 +19,7 @@
 #include <QDebug>
 #include <QSettings>
 #include <QInputDialog>
+#include <QDir>
 
 // ============================================================================
 // Construction / Destruction
@@ -45,6 +46,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Default output path: Output folder next to exe
     QString outputDir = QCoreApplication::applicationDirPath() + "/Output";
+    QDir().mkpath(outputDir);
     QString defaultFile = outputDir + "/recording_"
                           + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")
                           + ".mp4";
@@ -1099,6 +1101,11 @@ void MainWindow::loadSettings()
 
     if (settings.contains("outputDir")) {
         QString dir = settings.value("outputDir").toString();
+        // 保存されたディレクトリが存在しない場合はデフォルト（exe横のOutput）にフォールバック
+        if (!QDir(dir).exists()) {
+            dir = QCoreApplication::applicationDirPath() + "/Output";
+            QDir().mkpath(dir);
+        }
         QString defaultFile = dir + "/recording_"
                               + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")
                               + ".mp4";
