@@ -35,6 +35,13 @@
     <item>
      <layout class="QHBoxLayout" name="presetLayout">
       <item>
+       <spacer name="presetLeftSpacer">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </spacer>
+      </item>
+      <item>
        <widget class="QLabel" name="presetLabel">
         <property name="text">
          <string>プリセット:</string>
@@ -45,7 +52,7 @@
        <widget class="QComboBox" name="presetCombo">
         <property name="minimumSize">
          <size>
-          <width>200</width>
+          <width>180</width>
           <height>0</height>
          </size>
         </property>
@@ -54,14 +61,37 @@
       <item>
        <widget class="QPushButton" name="savePresetBtn">
         <property name="text">
-         <string>保存</string>
+         <string/>
+        </property>
+        <property name="toolTip">
+         <string>プリセットを保存</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QPushButton" name="deletePresetBtn">
         <property name="text">
-         <string>削除</string>
+         <string/>
+        </property>
+        <property name="toolTip">
+         <string>プリセットを削除</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="presetRightSpacer">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="settingsBtn">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="toolTip">
+         <string>設定</string>
         </property>
        </widget>
       </item>

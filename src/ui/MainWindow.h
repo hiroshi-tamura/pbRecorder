@@ -54,6 +54,7 @@ private slots:
     void onSavePreset();
     void onDeletePreset();
     void onPresetChanged(int index);
+    void onSettingsTriggered();
 
 private:
     void setupConnections();
@@ -79,12 +80,15 @@ private:
     void loadSettings();
 
     pb::RecordingConfig buildRecordingConfig() const;
+    void retranslateUi();
     void setRecordingState(bool recording);
     void setPausedState(bool paused);
 
     QString formatDuration(int64_t ms) const;
     QString formatFileSize(int64_t bytes) const;
 
+
+    QString currentLang_ = "en";
 
     std::unique_ptr<Ui::MainWindow> ui;
 

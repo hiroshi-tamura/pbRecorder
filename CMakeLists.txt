@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.1.0 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -162,6 +162,7 @@ set(PIPELINE_SOURCES
 
 set(UI_SOURCES
     src/ui/MainWindow.cpp
+    src/ui/SettingsDialog.cpp
     src/ui/RegionSelectorWidget.cpp
 )
 

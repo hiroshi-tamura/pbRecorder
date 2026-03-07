@@ -23,6 +23,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QStyle>
+
+#include "SettingsDialog.h"
 
 // ============================================================================
 // Construction / Destruction
@@ -35,6 +38,16 @@ MainWindow::MainWindow(QWidget *parent)
     , windowEnum_(std::make_unique<pb::WindowEnumerator>())
 {
     ui->setupUi(this);
+
+    // Preset/settings button icons using Segoe MDL2 Assets (Windows 10+)
+    QFont mdl2("Segoe MDL2 Assets", 12);
+    for (auto *btn : {ui->savePresetBtn, ui->deletePresetBtn, ui->settingsBtn}) {
+        btn->setFont(mdl2);
+        btn->setFixedSize(28, 28);
+    }
+    ui->savePresetBtn->setText(QChar(0xE74E)); // save icon
+    ui->deletePresetBtn->setText(QChar(0xE74D)); // delete icon
+    ui->settingsBtn->setText(QChar(0xE713)); // gear icon
 
     setupConnections();
 
@@ -59,8 +72,9 @@ MainWindow::MainWindow(QWidget *parent)
     // Load presets and restore last session
     loadPresets();
     loadSettings();
+    retranslateUi();
 
-    statusBar()->showMessage(tr("準備完了"));
+    statusBar()->showMessage(currentLang_ == "ja" ? tr("準備完了") : tr("Ready"));
 
     // Auto-test mode: --auto-test records for 5 seconds then exits
     if (QCoreApplication::arguments().contains("--auto-test")) {
@@ -195,6 +209,10 @@ void MainWindow::setupConnections()
             this, &MainWindow::onSavePreset);
     connect(ui->deletePresetBtn, &QPushButton::clicked,
             this, &MainWindow::onDeletePreset);
+
+    // Settings
+    connect(ui->settingsBtn, &QPushButton::clicked,
+            this, &MainWindow::onSettingsTriggered);
 
     // Update timer
     connect(&updateTimer_, &QTimer::timeout,
@@ -1111,6 +1129,7 @@ void MainWindow::saveSettings()
     if (!ui->autoFileNameCheck->isChecked()) {
         s["outputFileName"] = ui->outputFileEdit->text();
     }
+    s["language"] = currentLang_;
 
     root["lastSession"] = s;
     saveJson(root);
@@ -1219,4 +1238,104 @@ void MainWindow::loadSettings()
     }
 
     ui->outputFileEdit->setEnabled(!ui->autoFileNameCheck->isChecked());
+
+    if (s.contains("language")) {
+        currentLang_ = s["language"].toString();
+        retranslateUi();
+    }
+}
+
+// ============================================================================
+// Settings dialog
+// ============================================================================
+
+void MainWindow::onSettingsTriggered()
+{
+    SettingsDialog dlg(currentLang_, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        QString lang = dlg.selectedLanguage();
+        if (lang != currentLang_) {
+            currentLang_ = lang;
+            retranslateUi();
+            saveSettings();
+        }
+    }
+}
+
+void MainWindow::retranslateUi()
+{
+    bool ja = (currentLang_ == "ja");
+
+    // Preset
+    ui->presetLabel->setText(ja ? "プリセット:" : "Preset:");
+    ui->presetCombo->setItemText(0, ja ? "(カスタム)" : "(Custom)");
+    ui->savePresetBtn->setToolTip(ja ? "プリセットを保存" : "Save preset");
+    ui->deletePresetBtn->setToolTip(ja ? "プリセットを削除" : "Delete preset");
+    ui->settingsBtn->setToolTip(ja ? "設定" : "Settings");
+
+    // Source group
+    ui->sourceGroupBox->setTitle(ja ? "キャプチャソース" : "Capture Source");
+    ui->captureModeLabel->setText(ja ? "モード:" : "Mode:");
+    ui->captureModeCombo->setItemText(0, ja ? "スクリーン" : "Screen");
+    ui->captureModeCombo->setItemText(1, ja ? "ウィンドウ" : "Window");
+    ui->captureModeCombo->setItemText(2, ja ? "範囲指定" : "Region");
+    ui->monitorLabel->setText(ja ? "モニター:" : "Monitor:");
+    ui->windowLabel->setText(ja ? "ウィンドウ:" : "Window:");
+    ui->refreshWindowsBtn->setText(ja ? "更新" : "Refresh");
+    ui->regionLabel->setText(ja ? "範囲:" : "Region:");
+    if (!regionSelected_) {
+        ui->regionInfoLabel->setText(ja ? "未選択" : "Not selected");
+    }
+    ui->selectRegionBtn->setText(ja ? "範囲選択" : "Select");
+    ui->autoAdjustCheck->setText(ja ? "オートアジャスト" : "Auto adjust");
+    ui->autoAdjustCheck->setToolTip(ja ? "範囲選択時に近くのラインに自動でスナップします" : "Snap to nearby lines when selecting region");
+    ui->captureCursorCheck->setText(ja ? "マウスカーソルをキャプチャ" : "Capture mouse cursor");
+
+    // Video group
+    ui->videoGroupBox->setTitle(ja ? "映像設定" : "Video Settings");
+    ui->videoCodecLabel->setText(ja ? "コーデック:" : "Codec:");
+    ui->containerLabel->setText(ja ? "コンテナ:" : "Container:");
+    ui->fpsLabel->setText(ja ? "FPS:" : "FPS:");
+    ui->videoBitrateLabel->setText(ja ? "ビットレート:" : "Bitrate:");
+    ui->videoQualityLabel->setText(ja ? "品質:" : "Quality:");
+    ui->realtimeEncodeCheck->setText(ja ? "リアルタイムエンコード" : "Realtime encode");
+    ui->h264ProfileLabel->setText(ja ? "プロファイル:" : "Profile:");
+    ui->h264LevelLabel->setText(ja ? "レベル:" : "Level:");
+    ui->h264LevelCombo->setItemText(0, ja ? "自動" : "Auto");
+    ui->hwEncoderCheck->setText(ja ? "ハードウェアエンコーダー (GPU)" : "Hardware encoder (GPU)");
+
+    // Audio group
+    ui->audioGroupBox->setTitle(ja ? "音声設定" : "Audio Settings");
+    ui->outputAudioLabel->setText(ja ? "出力デバイス:" : "Output device:");
+    ui->inputAudioLabel->setText(ja ? "入力デバイス:" : "Input device:");
+    ui->outputAudioCombo->setItemText(0, ja ? "なし" : "None");
+    ui->inputAudioCombo->setItemText(0, ja ? "なし" : "None");
+    ui->asioChannelLabel->setText(ja ? "ASIOチャンネル:" : "ASIO channel:");
+    ui->audioCodecLabel->setText(ja ? "コーデック:" : "Codec:");
+    ui->audioBitrateLabel->setText(ja ? "ビットレート:" : "Bitrate:");
+    ui->audioSampleRateLabel->setText(ja ? "サンプリングレート:" : "Sample rate:");
+    ui->audioBitDepthLabel->setText(ja ? "ビット深度:" : "Bit depth:");
+    ui->vorbisQualityLabel->setText(ja ? "品質:" : "Quality:");
+
+    // Output group
+    ui->outputGroupBox->setTitle(ja ? "出力" : "Output");
+    ui->outputDirLabel->setText(ja ? "フォルダ:" : "Folder:");
+    ui->outputDirEdit->setPlaceholderText(ja ? "出力フォルダ..." : "Output folder...");
+    ui->browseBtn->setText(ja ? "参照" : "Browse");
+    ui->outputFileLabel->setText(ja ? "ファイル名:" : "Filename:");
+    ui->outputFileEdit->setPlaceholderText(ja ? "ファイル名..." : "Filename...");
+    ui->autoFileNameCheck->setText(ja ? "自動" : "Auto");
+    ui->autoFileNameCheck->setToolTip(ja ? "録画開始時に日時と設定からファイル名を自動生成します" : "Auto-generate filename from date/time and settings");
+
+    // Record controls
+    if (!isRecording_) {
+        ui->recordBtn->setText(ja ? "録画" : "Record");
+    } else {
+        ui->recordBtn->setText(ja ? "停止" : "Stop");
+    }
+    if (!isPaused_) {
+        ui->pauseBtn->setText(ja ? "一時停止" : "Pause");
+    } else {
+        ui->pauseBtn->setText(ja ? "再開" : "Resume");
+    }
 }
