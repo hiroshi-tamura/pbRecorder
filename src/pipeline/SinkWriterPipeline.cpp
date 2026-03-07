@@ -2,6 +2,7 @@
 
 #include <dxgi.h>
 #include <stdexcept>
+#include <algorithm>
 
 // Link required libraries
 #pragma comment(lib, "mf.lib")
@@ -173,6 +174,10 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
         // Duration of one frame in 100ns units
         int64_t frameDuration = 10000000LL / config_.video.fps;
 
+        // Encoder dimensions (may be aligned to 16)
+        uint32_t encWidth  = static_cast<uint32_t>(config_.video.width);
+        uint32_t encHeight = static_cast<uint32_t>(config_.video.height);
+
         // Ensure staging texture exists for GPU→CPU copy
         if (!ensureStagingTexture(frame.width, frame.height)) {
             reportError("Failed to create staging texture");
@@ -190,28 +195,30 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
             return false;
         }
 
-        // Calculate buffer size: width * height * 4 bytes (BGRA)
-        DWORD stride = frame.width * 4;
-        DWORD dataSize = stride * frame.height;
+        // Use encoder dimensions for the output buffer
+        DWORD stride = encWidth * 4;
+        DWORD dataSize = stride * encHeight;
 
         // Create MF memory buffer
         ComPtr<IMFMediaBuffer> mediaBuffer;
         PB_CHECK_HR(MFCreateMemoryBuffer(dataSize, &mediaBuffer),
                     "Failed to create video memory buffer");
 
-        // Copy pixel data (handle stride mismatch)
+        // Copy pixel data, padding if frame is smaller than encoder size
         BYTE* bufferPtr = nullptr;
         PB_CHECK_HR(mediaBuffer->Lock(&bufferPtr, nullptr, nullptr),
                     "Failed to lock video buffer");
 
-        if (mapped.RowPitch == stride) {
-            memcpy(bufferPtr, mapped.pData, dataSize);
-        } else {
-            // Row-by-row copy for stride mismatch
-            const BYTE* src = static_cast<const BYTE*>(mapped.pData);
-            for (uint32_t y = 0; y < frame.height; ++y) {
-                memcpy(bufferPtr + y * stride, src + y * mapped.RowPitch, stride);
-            }
+        // Zero-fill the entire buffer first (handles padding)
+        memset(bufferPtr, 0, dataSize);
+
+        uint32_t copyWidth  = std::min(frame.width, encWidth);
+        uint32_t copyHeight = std::min(frame.height, encHeight);
+        DWORD copyStride = copyWidth * 4;
+
+        const BYTE* src = static_cast<const BYTE*>(mapped.pData);
+        for (uint32_t y = 0; y < copyHeight; ++y) {
+            memcpy(bufferPtr + y * stride, src + y * mapped.RowPitch, copyStride);
         }
 
         d3dContext_->Unmap(stagingTexture_.Get(), 0);

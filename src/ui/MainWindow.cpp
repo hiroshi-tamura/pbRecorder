@@ -152,7 +152,7 @@ void MainWindow::setupConnections()
     // Auto filename checkbox
     connect(ui->autoFileNameCheck, &QCheckBox::toggled,
             this, [this](bool checked) {
-        ui->outputFileEdit->setReadOnly(checked);
+        ui->outputFileEdit->setEnabled(!checked);
         if (checked) updateAutoFileName();
     });
 
@@ -1198,7 +1198,7 @@ void MainWindow::loadSettings()
         updateAutoFileName();
     }
 
-    ui->outputFileEdit->setReadOnly(ui->autoFileNameCheck->isChecked());
+    ui->outputFileEdit->setEnabled(!ui->autoFileNameCheck->isChecked());
 
     settings.endGroup();
 }

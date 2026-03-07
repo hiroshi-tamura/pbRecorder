@@ -51,6 +51,10 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
     if (config_.video.width == 0) config_.video.width = captureSource_->getWidth();
     if (config_.video.height == 0) config_.video.height = captureSource_->getHeight();
 
+    // Align to 16-pixel boundary for encoder compatibility (avoids garbled output)
+    config_.video.width  = (config_.video.width  + 15) & ~15;
+    config_.video.height = (config_.video.height + 15) & ~15;
+
     // Create audio sources
     if (config_.recordAudio) {
         // Output audio (system/loopback)
