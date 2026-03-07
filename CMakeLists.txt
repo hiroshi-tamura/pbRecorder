@@ -190,7 +190,7 @@ if(ASIO_AVAILABLE)
     )
 endif()
 
-add_executable(${PROJECT_NAME} WIN32 ${ALL_SOURCES} ${UI_FILES})
+add_executable(${PROJECT_NAME} WIN32 ${ALL_SOURCES} ${UI_FILES} resources/pbRecorder.rc)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
