@@ -2,7 +2,6 @@
 #include "ui_MainWindow.h"
 
 #include "RegionSelectorWidget.h"
-#include "SettingsDialog.h"
 
 #include "core/MonitorEnumerator.h"
 #include "core/WindowEnumerator.h"
@@ -17,9 +16,12 @@
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QDebug>
-#include <QSettings>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QInputDialog>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 
 // ============================================================================
@@ -44,6 +46,9 @@ MainWindow::MainWindow(QWidget *parent)
     // Initialize combo state
     onVideoCodecChanged(0);          // triggers updateContainerCombo
     onCaptureModeChanged(0);         // show/hide correct widgets
+
+    // Default H.264 profile to High
+    ui->h264ProfileCombo->setCurrentIndex(2);
 
     // Default output folder: Output folder next to exe
     QString outputDir = QCoreApplication::applicationDirPath() + "/Output";
@@ -183,12 +188,6 @@ void MainWindow::setupConnections()
     connect(ui->pauseBtn, &QPushButton::clicked,
             this, &MainWindow::onPause);
 
-    // Menu
-    connect(ui->actionSettings, &QAction::triggered,
-            this, &MainWindow::onSettingsTriggered);
-    connect(ui->actionExit, &QAction::triggered,
-            this, &QMainWindow::close);
-
     // Preset controls
     connect(ui->presetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onPresetChanged);
@@ -237,7 +236,11 @@ void MainWindow::updateCaptureWidgetVisibility(int mode)
 
 void MainWindow::onVideoCodecChanged(int index)
 {
-    Q_UNUSED(index);
+    bool isH264 = (index == 0);
+    ui->h264ProfileCombo->setVisible(isH264);
+    ui->h264LevelCombo->setVisible(isH264);
+    ui->h264ProfileLabel->setVisible(isH264);
+    ui->h264LevelLabel->setVisible(isH264);
     updateContainerCombo();
 }
 
@@ -791,6 +794,7 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
     if (modeIdx == 2 && regionSelected_) {
         config.capture.region = selectedRegion_;
     }
+    config.capture.captureCursor = ui->captureCursorCheck->isChecked();
 
     // Video
     config.video.codec = (ui->videoCodecCombo->currentIndex() == 0)
@@ -800,6 +804,7 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
     config.video.bitrate = ui->videoBitrateSpinBox->value() * 1000;  // kbps -> bps
     config.video.quality = ui->videoQualitySlider->value();
     config.video.realtimeEncode = ui->realtimeEncodeCheck->isChecked();
+    config.video.useHardwareEncoder = ui->hwEncoderCheck->isChecked();
 
     // Container
     if (ui->containerCombo->count() > 0) {
@@ -865,19 +870,6 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
 }
 
 // ============================================================================
-// Settings dialog
-// ============================================================================
-
-void MainWindow::onSettingsTriggered()
-{
-    SettingsDialog dlg(this);
-    if (dlg.exec() == QDialog::Accepted) {
-        // Apply settings if needed
-        statusBar()->showMessage(tr("設定を適用しました"), 3000);
-    }
-}
-
-// ============================================================================
 // Formatting helpers
 // ============================================================================
 
@@ -905,6 +897,30 @@ QString MainWindow::formatFileSize(int64_t bytes) const
 }
 
 // ============================================================================
+// JSON Settings I/O
+// ============================================================================
+
+QString MainWindow::settingsFilePath() const
+{
+    return QCoreApplication::applicationDirPath() + "/pbRecorder.json";
+}
+
+QJsonObject MainWindow::loadJson() const
+{
+    QFile file(settingsFilePath());
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    return doc.isObject() ? doc.object() : QJsonObject();
+}
+
+void MainWindow::saveJson(const QJsonObject& root) const
+{
+    QFile file(settingsFilePath());
+    if (!file.open(QIODevice::WriteOnly)) return;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+// ============================================================================
 // Preset System
 // ============================================================================
 
@@ -914,13 +930,11 @@ void MainWindow::loadPresets()
     ui->presetCombo->clear();
     ui->presetCombo->addItem(tr("(カスタム)"));
 
-    QSettings settings("pbRecorder", "pbRecorder");
-    settings.beginGroup("Presets");
-    QStringList presets = settings.childGroups();
-    for (const QString& name : presets) {
-        ui->presetCombo->addItem(name);
+    QJsonObject root = loadJson();
+    QJsonObject presets = root["presets"].toObject();
+    for (auto it = presets.begin(); it != presets.end(); ++it) {
+        ui->presetCombo->addItem(it.key());
     }
-    settings.endGroup();
 
     ui->presetCombo->blockSignals(false);
 }
@@ -937,7 +951,6 @@ void MainWindow::onSavePreset()
     saveCurrentAsPreset(name);
     loadPresets();
 
-    // Select the newly saved preset
     int idx = ui->presetCombo->findText(name);
     if (idx >= 0) {
         ui->presetCombo->setCurrentIndex(idx);
@@ -948,29 +961,35 @@ void MainWindow::onSavePreset()
 
 void MainWindow::saveCurrentAsPreset(const QString& name)
 {
-    QSettings settings("pbRecorder", "pbRecorder");
-    settings.beginGroup("Presets/" + name);
+    QJsonObject root = loadJson();
+    QJsonObject presets = root["presets"].toObject();
 
-    settings.setValue("captureMode", ui->captureModeCombo->currentIndex());
-    settings.setValue("videoCodec", ui->videoCodecCombo->currentIndex());
-    settings.setValue("container", ui->containerCombo->currentIndex());
-    settings.setValue("fps", ui->fpsSpinBox->value());
-    settings.setValue("videoBitrate", ui->videoBitrateSpinBox->value());
-    settings.setValue("videoQuality", ui->videoQualitySlider->value());
-    settings.setValue("audioCodec", ui->audioCodecCombo->currentIndex());
-    settings.setValue("audioBitrate", ui->audioBitrateSpinBox->value());
-    settings.setValue("outputAudioIndex", ui->outputAudioCombo->currentIndex());
-    settings.setValue("inputAudioIndex", ui->inputAudioCombo->currentIndex());
-    settings.setValue("realtimeEncode", ui->realtimeEncodeCheck->isChecked());
+    QJsonObject p;
+    p["captureMode"] = ui->captureModeCombo->currentIndex();
+    p["videoCodec"] = ui->videoCodecCombo->currentIndex();
+    p["container"] = ui->containerCombo->currentIndex();
+    p["fps"] = ui->fpsSpinBox->value();
+    p["videoBitrate"] = ui->videoBitrateSpinBox->value();
+    p["videoQuality"] = ui->videoQualitySlider->value();
+    p["audioCodec"] = ui->audioCodecCombo->currentIndex();
+    p["audioBitrate"] = ui->audioBitrateSpinBox->value();
+    p["outputAudioIndex"] = ui->outputAudioCombo->currentIndex();
+    p["inputAudioIndex"] = ui->inputAudioCombo->currentIndex();
+    p["realtimeEncode"] = ui->realtimeEncodeCheck->isChecked();
+    p["hwEncoder"] = ui->hwEncoderCheck->isChecked();
+    p["h264Profile"] = ui->h264ProfileCombo->currentIndex();
+    p["h264Level"] = ui->h264LevelCombo->currentIndex();
+    p["captureCursor"] = ui->captureCursorCheck->isChecked();
 
-    settings.endGroup();
+    presets[name] = p;
+    root["presets"] = presets;
+    saveJson(root);
 }
 
 void MainWindow::onDeletePreset()
 {
     int idx = ui->presetCombo->currentIndex();
     if (idx <= 0) {
-        // Cannot delete "(Custom)"
         QMessageBox::information(this, tr("プリセット削除"),
                                  tr("削除するプリセットを選択してください。"));
         return;
@@ -982,10 +1001,11 @@ void MainWindow::onDeletePreset()
                                      QMessageBox::Yes | QMessageBox::No);
     if (ret != QMessageBox::Yes) return;
 
-    QSettings settings("pbRecorder", "pbRecorder");
-    settings.beginGroup("Presets");
-    settings.remove(name);
-    settings.endGroup();
+    QJsonObject root = loadJson();
+    QJsonObject presets = root["presets"].toObject();
+    presets.remove(name);
+    root["presets"] = presets;
+    saveJson(root);
 
     loadPresets();
     statusBar()->showMessage(tr("プリセット '%1' を削除しました").arg(name), 3000);
@@ -993,61 +1013,59 @@ void MainWindow::onDeletePreset()
 
 void MainWindow::onPresetChanged(int index)
 {
-    if (index <= 0) return; // "(Custom)" or invalid
+    if (index <= 0) return;
     QString name = ui->presetCombo->itemText(index);
     applyPreset(name);
 }
 
 void MainWindow::applyPreset(const QString& name)
 {
-    QSettings settings("pbRecorder", "pbRecorder");
-    settings.beginGroup("Presets/" + name);
+    QJsonObject root = loadJson();
+    QJsonObject p = root["presets"].toObject()[name].toObject();
+    if (p.isEmpty()) return;
 
-    if (settings.contains("captureMode"))
-        ui->captureModeCombo->setCurrentIndex(settings.value("captureMode").toInt());
-
-    if (settings.contains("videoCodec"))
-        ui->videoCodecCombo->setCurrentIndex(settings.value("videoCodec").toInt());
-
-    if (settings.contains("container"))
-        ui->containerCombo->setCurrentIndex(settings.value("container").toInt());
-
-    if (settings.contains("fps"))
-        ui->fpsSpinBox->setValue(settings.value("fps").toInt());
-
-    if (settings.contains("videoBitrate")) {
-        int vb = settings.value("videoBitrate").toInt();
+    if (p.contains("captureMode"))
+        ui->captureModeCombo->setCurrentIndex(p["captureMode"].toInt());
+    if (p.contains("videoCodec"))
+        ui->videoCodecCombo->setCurrentIndex(p["videoCodec"].toInt());
+    if (p.contains("container"))
+        ui->containerCombo->setCurrentIndex(p["container"].toInt());
+    if (p.contains("fps"))
+        ui->fpsSpinBox->setValue(p["fps"].toInt());
+    if (p.contains("videoBitrate")) {
+        int vb = p["videoBitrate"].toInt();
         ui->videoBitrateSpinBox->setValue(vb);
         ui->videoBitrateSlider->setValue(vb);
     }
-
-    if (settings.contains("videoQuality"))
-        ui->videoQualitySlider->setValue(settings.value("videoQuality").toInt());
-
-    if (settings.contains("audioCodec"))
-        ui->audioCodecCombo->setCurrentIndex(settings.value("audioCodec").toInt());
-
-    if (settings.contains("audioBitrate")) {
-        int ab = settings.value("audioBitrate").toInt();
+    if (p.contains("videoQuality"))
+        ui->videoQualitySlider->setValue(p["videoQuality"].toInt());
+    if (p.contains("audioCodec"))
+        ui->audioCodecCombo->setCurrentIndex(p["audioCodec"].toInt());
+    if (p.contains("audioBitrate")) {
+        int ab = p["audioBitrate"].toInt();
         ui->audioBitrateSpinBox->setValue(ab);
         ui->audioBitrateSlider->setValue(ab);
     }
-
-    if (settings.contains("outputAudioIndex")) {
-        int idx = settings.value("outputAudioIndex").toInt();
-        if (idx >= 0 && idx < ui->outputAudioCombo->count())
-            ui->outputAudioCombo->setCurrentIndex(idx);
+    if (p.contains("outputAudioIndex")) {
+        int i = p["outputAudioIndex"].toInt();
+        if (i >= 0 && i < ui->outputAudioCombo->count())
+            ui->outputAudioCombo->setCurrentIndex(i);
     }
-    if (settings.contains("inputAudioIndex")) {
-        int idx = settings.value("inputAudioIndex").toInt();
-        if (idx >= 0 && idx < ui->inputAudioCombo->count())
-            ui->inputAudioCombo->setCurrentIndex(idx);
+    if (p.contains("inputAudioIndex")) {
+        int i = p["inputAudioIndex"].toInt();
+        if (i >= 0 && i < ui->inputAudioCombo->count())
+            ui->inputAudioCombo->setCurrentIndex(i);
     }
-
-    if (settings.contains("realtimeEncode"))
-        ui->realtimeEncodeCheck->setChecked(settings.value("realtimeEncode").toBool());
-
-    settings.endGroup();
+    if (p.contains("realtimeEncode"))
+        ui->realtimeEncodeCheck->setChecked(p["realtimeEncode"].toBool());
+    if (p.contains("hwEncoder"))
+        ui->hwEncoderCheck->setChecked(p["hwEncoder"].toBool());
+    if (p.contains("h264Profile"))
+        ui->h264ProfileCombo->setCurrentIndex(p["h264Profile"].toInt());
+    if (p.contains("h264Level"))
+        ui->h264LevelCombo->setCurrentIndex(p["h264Level"].toInt());
+    if (p.contains("captureCursor"))
+        ui->captureCursorCheck->setChecked(p["captureCursor"].toBool());
 }
 
 // ============================================================================
@@ -1056,76 +1074,80 @@ void MainWindow::applyPreset(const QString& name)
 
 void MainWindow::saveSettings()
 {
-    QSettings settings("pbRecorder", "pbRecorder");
+    QJsonObject root = loadJson();
 
-    // Window geometry
-    settings.setValue("window/geometry", saveGeometry());
+    // Window geometry (base64 encoded)
+    root["windowGeometry"] = QString::fromLatin1(saveGeometry().toBase64());
 
-    // Last session parameters
-    settings.beginGroup("lastSession");
-    settings.setValue("captureMode", ui->captureModeCombo->currentIndex());
-    settings.setValue("monitorIndex", ui->monitorCombo->currentIndex());
-    settings.setValue("windowIndex", ui->windowCombo->currentIndex());
-    settings.setValue("regionSelected", regionSelected_);
+    QJsonObject s;
+    s["captureMode"] = ui->captureModeCombo->currentIndex();
+    s["monitorIndex"] = ui->monitorCombo->currentIndex();
+    s["windowIndex"] = ui->windowCombo->currentIndex();
+    s["regionSelected"] = regionSelected_;
     if (regionSelected_) {
-        settings.setValue("regionX", selectedRegion_.x);
-        settings.setValue("regionY", selectedRegion_.y);
-        settings.setValue("regionW", selectedRegion_.width);
-        settings.setValue("regionH", selectedRegion_.height);
+        s["regionX"] = selectedRegion_.x;
+        s["regionY"] = selectedRegion_.y;
+        s["regionW"] = selectedRegion_.width;
+        s["regionH"] = selectedRegion_.height;
     }
-    settings.setValue("videoCodec", ui->videoCodecCombo->currentIndex());
-    settings.setValue("container", ui->containerCombo->currentIndex());
-    settings.setValue("fps", ui->fpsSpinBox->value());
-    settings.setValue("videoBitrate", ui->videoBitrateSpinBox->value());
-    settings.setValue("videoQuality", ui->videoQualitySlider->value());
-    settings.setValue("audioCodec", ui->audioCodecCombo->currentIndex());
-    settings.setValue("audioBitrate", ui->audioBitrateSpinBox->value());
-    settings.setValue("outputAudioIndex", ui->outputAudioCombo->currentIndex());
-    settings.setValue("inputAudioIndex", ui->inputAudioCombo->currentIndex());
-    settings.setValue("realtimeEncode", ui->realtimeEncodeCheck->isChecked());
-    settings.setValue("asioStartCh", ui->asioStartChSpin->value());
-    settings.setValue("asioEndCh", ui->asioEndChSpin->value());
-
-    // Output directory and filename settings
-    settings.setValue("outputDir", ui->outputDirEdit->text());
-    settings.setValue("autoFileName", ui->autoFileNameCheck->isChecked());
+    s["videoCodec"] = ui->videoCodecCombo->currentIndex();
+    s["container"] = ui->containerCombo->currentIndex();
+    s["fps"] = ui->fpsSpinBox->value();
+    s["videoBitrate"] = ui->videoBitrateSpinBox->value();
+    s["videoQuality"] = ui->videoQualitySlider->value();
+    s["audioCodec"] = ui->audioCodecCombo->currentIndex();
+    s["audioBitrate"] = ui->audioBitrateSpinBox->value();
+    s["outputAudioIndex"] = ui->outputAudioCombo->currentIndex();
+    s["inputAudioIndex"] = ui->inputAudioCombo->currentIndex();
+    s["realtimeEncode"] = ui->realtimeEncodeCheck->isChecked();
+    s["hwEncoder"] = ui->hwEncoderCheck->isChecked();
+    s["h264Profile"] = ui->h264ProfileCombo->currentIndex();
+    s["h264Level"] = ui->h264LevelCombo->currentIndex();
+    s["captureCursor"] = ui->captureCursorCheck->isChecked();
+    s["asioStartCh"] = ui->asioStartChSpin->value();
+    s["asioEndCh"] = ui->asioEndChSpin->value();
+    s["outputDir"] = ui->outputDirEdit->text();
+    s["autoFileName"] = ui->autoFileNameCheck->isChecked();
     if (!ui->autoFileNameCheck->isChecked()) {
-        settings.setValue("outputFileName", ui->outputFileEdit->text());
+        s["outputFileName"] = ui->outputFileEdit->text();
     }
-    settings.endGroup();
+
+    root["lastSession"] = s;
+    saveJson(root);
 }
 
 void MainWindow::loadSettings()
 {
-    QSettings settings("pbRecorder", "pbRecorder");
+    QJsonObject root = loadJson();
 
     // Restore window geometry
-    if (settings.contains("window/geometry")) {
-        restoreGeometry(settings.value("window/geometry").toByteArray());
+    if (root.contains("windowGeometry")) {
+        QByteArray geo = QByteArray::fromBase64(root["windowGeometry"].toString().toLatin1());
+        restoreGeometry(geo);
     }
 
-    // Restore last session parameters
-    settings.beginGroup("lastSession");
+    QJsonObject s = root["lastSession"].toObject();
+    if (s.isEmpty()) return;
 
-    if (settings.contains("captureMode"))
-        ui->captureModeCombo->setCurrentIndex(settings.value("captureMode").toInt());
+    if (s.contains("captureMode"))
+        ui->captureModeCombo->setCurrentIndex(s["captureMode"].toInt());
 
-    if (settings.contains("monitorIndex")) {
-        int idx = settings.value("monitorIndex").toInt();
+    if (s.contains("monitorIndex")) {
+        int idx = s["monitorIndex"].toInt();
         if (idx >= 0 && idx < ui->monitorCombo->count())
             ui->monitorCombo->setCurrentIndex(idx);
     }
-    if (settings.contains("windowIndex")) {
-        int idx = settings.value("windowIndex").toInt();
+    if (s.contains("windowIndex")) {
+        int idx = s["windowIndex"].toInt();
         if (idx >= 0 && idx < ui->windowCombo->count())
             ui->windowCombo->setCurrentIndex(idx);
     }
-    if (settings.value("regionSelected", false).toBool()) {
+    if (s["regionSelected"].toBool()) {
         regionSelected_ = true;
-        selectedRegion_.x = settings.value("regionX", 0).toInt();
-        selectedRegion_.y = settings.value("regionY", 0).toInt();
-        selectedRegion_.width = settings.value("regionW", 800).toInt();
-        selectedRegion_.height = settings.value("regionH", 600).toInt();
+        selectedRegion_.x = s["regionX"].toInt();
+        selectedRegion_.y = s["regionY"].toInt();
+        selectedRegion_.width = s["regionW"].toInt(800);
+        selectedRegion_.height = s["regionH"].toInt(600);
         ui->regionInfoLabel->setText(
             QString("%1x%2 @ (%3,%4)")
                 .arg(selectedRegion_.width).arg(selectedRegion_.height)
@@ -1133,54 +1155,53 @@ void MainWindow::loadSettings()
         ui->regionInfoLabel->setStyleSheet("");
     }
 
-    if (settings.contains("videoCodec"))
-        ui->videoCodecCombo->setCurrentIndex(settings.value("videoCodec").toInt());
-
-    if (settings.contains("container"))
-        ui->containerCombo->setCurrentIndex(settings.value("container").toInt());
-
-    if (settings.contains("fps"))
-        ui->fpsSpinBox->setValue(settings.value("fps").toInt());
-
-    if (settings.contains("videoBitrate")) {
-        int vb = settings.value("videoBitrate").toInt();
+    if (s.contains("videoCodec"))
+        ui->videoCodecCombo->setCurrentIndex(s["videoCodec"].toInt());
+    if (s.contains("container"))
+        ui->containerCombo->setCurrentIndex(s["container"].toInt());
+    if (s.contains("fps"))
+        ui->fpsSpinBox->setValue(s["fps"].toInt());
+    if (s.contains("videoBitrate")) {
+        int vb = s["videoBitrate"].toInt();
         ui->videoBitrateSpinBox->setValue(vb);
         ui->videoBitrateSlider->setValue(vb);
     }
-
-    if (settings.contains("videoQuality"))
-        ui->videoQualitySlider->setValue(settings.value("videoQuality").toInt());
-
-    if (settings.contains("audioCodec"))
-        ui->audioCodecCombo->setCurrentIndex(settings.value("audioCodec").toInt());
-
-    if (settings.contains("audioBitrate")) {
-        int ab = settings.value("audioBitrate").toInt();
+    if (s.contains("videoQuality"))
+        ui->videoQualitySlider->setValue(s["videoQuality"].toInt());
+    if (s.contains("audioCodec"))
+        ui->audioCodecCombo->setCurrentIndex(s["audioCodec"].toInt());
+    if (s.contains("audioBitrate")) {
+        int ab = s["audioBitrate"].toInt();
         ui->audioBitrateSpinBox->setValue(ab);
         ui->audioBitrateSlider->setValue(ab);
     }
-
-    if (settings.contains("outputAudioIndex")) {
-        int idx = settings.value("outputAudioIndex").toInt();
+    if (s.contains("outputAudioIndex")) {
+        int idx = s["outputAudioIndex"].toInt();
         if (idx >= 0 && idx < ui->outputAudioCombo->count())
             ui->outputAudioCombo->setCurrentIndex(idx);
     }
-    if (settings.contains("inputAudioIndex")) {
-        int idx = settings.value("inputAudioIndex").toInt();
+    if (s.contains("inputAudioIndex")) {
+        int idx = s["inputAudioIndex"].toInt();
         if (idx >= 0 && idx < ui->inputAudioCombo->count())
             ui->inputAudioCombo->setCurrentIndex(idx);
     }
+    if (s.contains("asioStartCh"))
+        ui->asioStartChSpin->setValue(s["asioStartCh"].toInt());
+    if (s.contains("asioEndCh"))
+        ui->asioEndChSpin->setValue(s["asioEndCh"].toInt());
+    if (s.contains("realtimeEncode"))
+        ui->realtimeEncodeCheck->setChecked(s["realtimeEncode"].toBool());
+    if (s.contains("hwEncoder"))
+        ui->hwEncoderCheck->setChecked(s["hwEncoder"].toBool());
+    if (s.contains("h264Profile"))
+        ui->h264ProfileCombo->setCurrentIndex(s["h264Profile"].toInt());
+    if (s.contains("h264Level"))
+        ui->h264LevelCombo->setCurrentIndex(s["h264Level"].toInt());
+    if (s.contains("captureCursor"))
+        ui->captureCursorCheck->setChecked(s["captureCursor"].toBool());
 
-    if (settings.contains("asioStartCh"))
-        ui->asioStartChSpin->setValue(settings.value("asioStartCh").toInt());
-    if (settings.contains("asioEndCh"))
-        ui->asioEndChSpin->setValue(settings.value("asioEndCh").toInt());
-
-    if (settings.contains("realtimeEncode"))
-        ui->realtimeEncodeCheck->setChecked(settings.value("realtimeEncode").toBool());
-
-    if (settings.contains("outputDir")) {
-        QString dir = settings.value("outputDir").toString();
+    if (s.contains("outputDir")) {
+        QString dir = s["outputDir"].toString();
         if (!QDir(dir).exists()) {
             dir = QCoreApplication::applicationDirPath() + "/Output";
             QDir().mkpath(dir);
@@ -1188,17 +1209,14 @@ void MainWindow::loadSettings()
         ui->outputDirEdit->setText(QDir::toNativeSeparators(dir));
     }
 
-    if (settings.contains("autoFileName")) {
-        ui->autoFileNameCheck->setChecked(settings.value("autoFileName").toBool());
-    }
+    if (s.contains("autoFileName"))
+        ui->autoFileNameCheck->setChecked(s["autoFileName"].toBool());
 
-    if (!ui->autoFileNameCheck->isChecked() && settings.contains("outputFileName")) {
-        ui->outputFileEdit->setText(settings.value("outputFileName").toString());
+    if (!ui->autoFileNameCheck->isChecked() && s.contains("outputFileName")) {
+        ui->outputFileEdit->setText(s["outputFileName"].toString());
     } else {
         updateAutoFileName();
     }
 
     ui->outputFileEdit->setEnabled(!ui->autoFileNameCheck->isChecked());
-
-    settings.endGroup();
 }

@@ -162,13 +162,11 @@ set(PIPELINE_SOURCES
 
 set(UI_SOURCES
     src/ui/MainWindow.cpp
-    src/ui/SettingsDialog.cpp
     src/ui/RegionSelectorWidget.cpp
 )
 
 set(UI_FILES
     src/ui/MainWindow.ui
-    src/ui/SettingsDialog.ui
 )
 
 set(ALL_SOURCES

@@ -1,15 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- Background rounded rectangle -->
-  <rect x="16" y="16" width="224" height="224" rx="42" ry="42" fill="#192841"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e3a5f"/>
+      <stop offset="100%" stop-color="#0f1f35"/>
+    </linearGradient>
+    <linearGradient id="rec" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ff4455"/>
+      <stop offset="100%" stop-color="#cc2233"/>
+    </linearGradient>
+  </defs>
 
-  <!-- Record circle (red) -->
-  <circle cx="97" cy="123" r="46" fill="#dc3232"/>
+  <!-- Background -->
+  <rect x="32" y="32" width="448" height="448" rx="80" ry="80" fill="url(#bg)"/>
 
-  <!-- Three horizontal bars (blue) -->
-  <rect x="154" y="77" width="67" height="15" rx="5" ry="5" fill="#64b4ff"/>
-  <rect x="154" y="108" width="67" height="15" rx="5" ry="5" fill="#64b4ff"/>
-  <rect x="154" y="139" width="67" height="15" rx="5" ry="5" fill="#64b4ff"/>
+  <!-- Subtle inner shadow -->
+  <rect x="32" y="32" width="448" height="448" rx="80" ry="80" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="2"/>
+
+  <!-- Record button circle -->
+  <circle cx="200" cy="232" r="88" fill="url(#rec)"/>
+  <circle cx="200" cy="232" r="88" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="3"/>
+
+  <!-- Highlight on record button -->
+  <ellipse cx="178" cy="205" rx="30" ry="20" fill="rgba(255,255,255,0.12)"/>
+
+  <!-- Three stream bars -->
+  <rect x="316" y="168" width="120" height="20" rx="10" ry="10" fill="#5aadff"/>
+  <rect x="316" y="216" width="96" height="20" rx="10" ry="10" fill="#5aadff" opacity="0.7"/>
+  <rect x="316" y="264" width="72" height="20" rx="10" ry="10" fill="#5aadff" opacity="0.45"/>
 
   <!-- "pb" text -->
-  <text x="128" y="210" text-anchor="middle" font-family="Consolas, monospace" font-size="32" fill="rgba(180,200,230,0.78)">pb</text>
+  <text x="256" y="400" text-anchor="middle" font-family="'Segoe UI', sans-serif" font-weight="600" font-size="56" letter-spacing="4" fill="rgba(160,190,230,0.6)">pb</text>
 </svg>

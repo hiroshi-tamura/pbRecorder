@@ -175,6 +175,16 @@
          </property>
         </widget>
        </item>
+       <item row="5" column="1" colspan="2">
+        <widget class="QCheckBox" name="captureCursorCheck">
+         <property name="text">
+          <string>マウスカーソルをキャプチャ</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
       </layout>
      </widget>
     </item>
@@ -319,6 +329,83 @@
           <widget class="QCheckBox" name="realtimeEncodeCheck">
            <property name="text">
             <string>リアルタイムエンコード</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="0">
+          <widget class="QLabel" name="h264ProfileLabel">
+           <property name="text">
+            <string>プロファイル:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="1" colspan="2">
+          <widget class="QComboBox" name="h264ProfileCombo">
+           <item>
+            <property name="text">
+             <string>Baseline</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Main</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>High</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="7" column="0">
+          <widget class="QLabel" name="h264LevelLabel">
+           <property name="text">
+            <string>レベル:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="7" column="1" colspan="2">
+          <widget class="QComboBox" name="h264LevelCombo">
+           <item>
+            <property name="text">
+             <string>自動</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>4.0</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>4.1</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>4.2</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>5.0</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>5.1</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item row="8" column="0" colspan="3">
+          <widget class="QCheckBox" name="hwEncoderCheck">
+           <property name="text">
+            <string>ハードウェアエンコーダー (GPU)</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -702,35 +789,6 @@ QPushButton:disabled { background-color: #888888; }</string>
    </layout>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
-  <widget class="QMenuBar" name="menuBar">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>0</y>
-     <width>720</width>
-     <height>22</height>
-    </rect>
-   </property>
-   <widget class="QMenu" name="menuFile">
-    <property name="title">
-     <string>ファイル</string>
-    </property>
-    <addaction name="actionSettings"/>
-    <addaction name="separator"/>
-    <addaction name="actionExit"/>
-   </widget>
-   <addaction name="menuFile"/>
-  </widget>
-  <action name="actionSettings">
-   <property name="text">
-    <string>設定...</string>
-   </property>
-  </action>
-  <action name="actionExit">
-   <property name="text">
-    <string>終了</string>
-   </property>
-  </action>
  </widget>
  <resources/>
  <connections/>

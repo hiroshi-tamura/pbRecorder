@@ -3,7 +3,7 @@
 #include <QMainWindow>
 #include <QTimer>
 #include <QElapsedTimer>
-#include <QSettings>
+#include <QJsonObject>
 #include <memory>
 #include <vector>
 
@@ -44,7 +44,6 @@ private slots:
     void onBrowse();
     void onRecord();
     void onPause();
-    void onSettingsTriggered();
     void onUpdateTimer();
     void onVideoBitrateSliderChanged(int value);
     void onVideoBitrateSpinBoxChanged(int value);
@@ -70,6 +69,9 @@ private:
     QString getOutputFilePath() const;
     void updateAudioCodecWidgets();
 
+    QString settingsFilePath() const;
+    QJsonObject loadJson() const;
+    void saveJson(const QJsonObject& root) const;
     void loadPresets();
     void applyPreset(const QString& name);
     void saveCurrentAsPreset(const QString& name);
