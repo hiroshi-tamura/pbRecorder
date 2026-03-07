@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Background rounded rectangle -->
+  <rect x="16" y="16" width="224" height="224" rx="42" ry="42" fill="#192841"/>
+
+  <!-- Record circle (red) -->
+  <circle cx="97" cy="123" r="46" fill="#dc3232"/>
+
+  <!-- Three horizontal bars (blue) -->
+  <rect x="154" y="77" width="67" height="15" rx="5" ry="5" fill="#64b4ff"/>
+  <rect x="154" y="108" width="67" height="15" rx="5" ry="5" fill="#64b4ff"/>
+  <rect x="154" y="139" width="67" height="15" rx="5" ry="5" fill="#64b4ff"/>
+
+  <!-- "pb" text -->
+  <text x="128" y="210" text-anchor="middle" font-family="Consolas, monospace" font-size="32" fill="rgba(180,200,230,0.78)">pb</text>
+</svg>
