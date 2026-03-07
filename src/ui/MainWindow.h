@@ -65,6 +65,9 @@ private:
     void updateAudioCodecCombo();
     void updateCaptureWidgetVisibility(int mode);
     void updateOutputExtension();
+    void updateAutoFileName();
+    QString generateAutoFileName() const;
+    QString getOutputFilePath() const;
     void updateAudioCodecWidgets();
 
     void loadPresets();
@@ -79,7 +82,7 @@ private:
 
     QString formatDuration(int64_t ms) const;
     QString formatFileSize(int64_t bytes) const;
-    QString getFilterForContainer(pb::ContainerFormat fmt) const;
+
 
     std::unique_ptr<Ui::MainWindow> ui;
 

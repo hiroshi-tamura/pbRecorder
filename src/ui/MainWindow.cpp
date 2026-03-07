@@ -45,13 +45,11 @@ MainWindow::MainWindow(QWidget *parent)
     onVideoCodecChanged(0);          // triggers updateContainerCombo
     onCaptureModeChanged(0);         // show/hide correct widgets
 
-    // Default output path: Output folder next to exe
+    // Default output folder: Output folder next to exe
     QString outputDir = QCoreApplication::applicationDirPath() + "/Output";
     QDir().mkpath(outputDir);
-    QString defaultFile = outputDir + "/recording_"
-                          + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")
-                          + ".mp4";
-    ui->outputPathEdit->setText(defaultFile);
+    ui->outputDirEdit->setText(QDir::toNativeSeparators(outputDir));
+    updateAutoFileName();
 
     // Load presets and restore last session
     loadPresets();
@@ -150,6 +148,27 @@ void MainWindow::setupConnections()
 
     // Initially update audio codec-specific widgets
     updateAudioCodecWidgets();
+
+    // Auto filename checkbox
+    connect(ui->autoFileNameCheck, &QCheckBox::toggled,
+            this, [this](bool checked) {
+        ui->outputFileEdit->setReadOnly(checked);
+        if (checked) updateAutoFileName();
+    });
+
+    // Update auto filename when settings change
+    connect(ui->videoCodecCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::updateAutoFileName);
+    connect(ui->containerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::updateAutoFileName);
+    connect(ui->audioCodecCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::updateAutoFileName);
+    connect(ui->videoBitrateSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::updateAutoFileName);
+    connect(ui->audioBitrateSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::updateAutoFileName);
+    connect(ui->fpsSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::updateAutoFileName);
 
     // Buttons
     connect(ui->refreshWindowsBtn, &QPushButton::clicked,
@@ -280,27 +299,88 @@ void MainWindow::updateAudioCodecCombo()
 
 void MainWindow::updateOutputExtension()
 {
+    if (ui->autoFileNameCheck->isChecked()) {
+        updateAutoFileName();
+        return;
+    }
+
     if (ui->containerCombo->count() == 0) return;
 
     auto container = static_cast<pb::ContainerFormat>(
         ui->containerCombo->currentData().toInt());
 
-    QString path = ui->outputPathEdit->text();
-    if (path.isEmpty()) return;
+    QString fileName = ui->outputFileEdit->text();
+    if (fileName.isEmpty()) return;
 
     // Replace extension
-    int dotPos = path.lastIndexOf('.');
+    int dotPos = fileName.lastIndexOf('.');
     if (dotPos > 0) {
-        path = path.left(dotPos);
+        fileName = fileName.left(dotPos);
     }
 
     switch (container) {
-    case pb::ContainerFormat::MP4: path += ".mp4"; break;
-    case pb::ContainerFormat::MKV: path += ".mkv"; break;
-    case pb::ContainerFormat::WMV: path += ".wmv"; break;
+    case pb::ContainerFormat::MP4: fileName += ".mp4"; break;
+    case pb::ContainerFormat::MKV: fileName += ".mkv"; break;
+    case pb::ContainerFormat::WMV: fileName += ".wmv"; break;
     }
 
-    ui->outputPathEdit->setText(path);
+    ui->outputFileEdit->setText(fileName);
+}
+
+void MainWindow::updateAutoFileName()
+{
+    if (!ui->autoFileNameCheck->isChecked()) return;
+    ui->outputFileEdit->setText(generateAutoFileName());
+}
+
+QString MainWindow::generateAutoFileName() const
+{
+    QString dateTime = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
+
+    // Video codec name
+    QString videoCodec;
+    if (ui->videoCodecCombo->currentIndex() == 0)
+        videoCodec = "H264";
+    else
+        videoCodec = "WMV";
+
+    int videoBitrate = ui->videoBitrateSpinBox->value();
+    int fps = ui->fpsSpinBox->value();
+
+    // Audio codec name
+    QString audioCodec;
+    if (ui->audioCodecCombo->count() > 0) {
+        audioCodec = ui->audioCodecCombo->currentText().toUpper();
+    }
+    int audioBitrate = ui->audioBitrateSpinBox->value();
+
+    // Extension
+    QString ext = ".mp4";
+    if (ui->containerCombo->count() > 0) {
+        auto container = static_cast<pb::ContainerFormat>(
+            ui->containerCombo->currentData().toInt());
+        switch (container) {
+        case pb::ContainerFormat::MP4: ext = ".mp4"; break;
+        case pb::ContainerFormat::MKV: ext = ".mkv"; break;
+        case pb::ContainerFormat::WMV: ext = ".wmv"; break;
+        }
+    }
+
+    return QString("%1_%2-%3K-%4FPS_%5-%6K%7")
+        .arg(dateTime)
+        .arg(videoCodec)
+        .arg(videoBitrate)
+        .arg(fps)
+        .arg(audioCodec)
+        .arg(audioBitrate)
+        .arg(ext);
+}
+
+QString MainWindow::getOutputFilePath() const
+{
+    QString dir = ui->outputDirEdit->text();
+    QString fileName = ui->outputFileEdit->text();
+    return QDir(dir).filePath(fileName);
 }
 
 // ============================================================================
@@ -499,39 +579,18 @@ void MainWindow::onSelectRegion()
 
 void MainWindow::onBrowse()
 {
-    auto container = pb::ContainerFormat::MP4;
-    if (ui->containerCombo->count() > 0) {
-        container = static_cast<pb::ContainerFormat>(
-            ui->containerCombo->currentData().toInt());
+    QString currentDir = ui->outputDirEdit->text();
+    if (!QDir(currentDir).exists()) {
+        currentDir = QCoreApplication::applicationDirPath() + "/Output";
     }
 
-    QString filter = getFilterForContainer(container);
+    QString dir = QFileDialog::getExistingDirectory(
+        this, tr("出力フォルダを選択"), currentDir,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
 
-    // ダイアログに渡すパスのディレクトリが存在しなければデフォルトに戻す
-    QString initialPath = ui->outputPathEdit->text();
-    QFileInfo fi(initialPath);
-    if (!fi.dir().exists()) {
-        QString defaultDir = QCoreApplication::applicationDirPath() + "/Output";
-        QDir().mkpath(defaultDir);
-        initialPath = defaultDir + "/recording.mp4";
+    if (!dir.isEmpty()) {
+        ui->outputDirEdit->setText(QDir::toNativeSeparators(dir));
     }
-
-    QString path = QFileDialog::getSaveFileName(
-        this, tr("録画を保存"), initialPath, filter);
-
-    if (!path.isEmpty()) {
-        ui->outputPathEdit->setText(path);
-    }
-}
-
-QString MainWindow::getFilterForContainer(pb::ContainerFormat fmt) const
-{
-    switch (fmt) {
-    case pb::ContainerFormat::MP4: return tr("MP4 動画 (*.mp4)");
-    case pb::ContainerFormat::MKV: return tr("MKV 動画 (*.mkv)");
-    case pb::ContainerFormat::WMV: return tr("WMV 動画 (*.wmv)");
-    }
-    return tr("すべてのファイル (*.*)");
 }
 
 // ============================================================================
@@ -541,11 +600,23 @@ QString MainWindow::getFilterForContainer(pb::ContainerFormat fmt) const
 void MainWindow::onRecord()
 {
     if (!isRecording_) {
+        // 自動ファイル名の場合、録画開始時に日時を更新
+        if (ui->autoFileNameCheck->isChecked()) {
+            updateAutoFileName();
+        }
+
         // Validate
-        if (ui->outputPathEdit->text().trimmed().isEmpty()) {
-            QMessageBox::warning(this, tr("エラー"), tr("出力ファイルパスを指定してください。"));
+        if (ui->outputDirEdit->text().trimmed().isEmpty()) {
+            QMessageBox::warning(this, tr("エラー"), tr("出力フォルダを指定してください。"));
             return;
         }
+        if (ui->outputFileEdit->text().trimmed().isEmpty()) {
+            QMessageBox::warning(this, tr("エラー"), tr("ファイル名を指定してください。"));
+            return;
+        }
+
+        // 出力フォルダが存在しなければ作成
+        QDir().mkpath(ui->outputDirEdit->text());
 
         if (ui->captureModeCombo->currentIndex() == 2 && !regionSelected_) {
             QMessageBox::warning(this, tr("エラー"), tr("先にキャプチャ範囲を選択してください。"));
@@ -788,7 +859,7 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
     config.recordAudio = config.useOutputAudio || config.useInputAudio;
 
     // Output
-    config.outputPath = ui->outputPathEdit->text().toStdWString();
+    config.outputPath = getOutputFilePath().toStdWString();
 
     return config;
 }
@@ -1015,12 +1086,11 @@ void MainWindow::saveSettings()
     settings.setValue("asioStartCh", ui->asioStartChSpin->value());
     settings.setValue("asioEndCh", ui->asioEndChSpin->value());
 
-    // Output directory (just the directory part)
-    QString outputPath = ui->outputPathEdit->text();
-    int lastSlash = outputPath.lastIndexOf('/');
-    if (lastSlash < 0) lastSlash = outputPath.lastIndexOf('\\');
-    if (lastSlash > 0) {
-        settings.setValue("outputDir", outputPath.left(lastSlash));
+    // Output directory and filename settings
+    settings.setValue("outputDir", ui->outputDirEdit->text());
+    settings.setValue("autoFileName", ui->autoFileNameCheck->isChecked());
+    if (!ui->autoFileNameCheck->isChecked()) {
+        settings.setValue("outputFileName", ui->outputFileEdit->text());
     }
     settings.endGroup();
 }
@@ -1111,19 +1181,24 @@ void MainWindow::loadSettings()
 
     if (settings.contains("outputDir")) {
         QString dir = settings.value("outputDir").toString();
-        // 保存されたディレクトリが存在しない場合はデフォルト（exe横のOutput）にフォールバック
         if (!QDir(dir).exists()) {
             dir = QCoreApplication::applicationDirPath() + "/Output";
             QDir().mkpath(dir);
         }
-        QString defaultFile = dir + "/recording_"
-                              + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")
-                              + ".mp4";
-        ui->outputPathEdit->setText(defaultFile);
+        ui->outputDirEdit->setText(QDir::toNativeSeparators(dir));
     }
 
-    // Update extension to match the selected container
-    updateOutputExtension();
+    if (settings.contains("autoFileName")) {
+        ui->autoFileNameCheck->setChecked(settings.value("autoFileName").toBool());
+    }
+
+    if (!ui->autoFileNameCheck->isChecked() && settings.contains("outputFileName")) {
+        ui->outputFileEdit->setText(settings.value("outputFileName").toString());
+    } else {
+        updateAutoFileName();
+    }
+
+    ui->outputFileEdit->setReadOnly(ui->autoFileNameCheck->isChecked());
 
     settings.endGroup();
 }
