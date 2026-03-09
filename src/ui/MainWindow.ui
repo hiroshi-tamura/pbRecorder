@@ -453,6 +453,7 @@
          <string>音声設定</string>
         </property>
         <layout class="QGridLayout" name="audioLayout">
+         <!-- row 0: Output device -->
          <item row="0" column="0">
           <widget class="QLabel" name="outputAudioLabel">
            <property name="text">
@@ -463,24 +464,80 @@
          <item row="0" column="1" colspan="2">
           <widget class="QComboBox" name="outputAudioCombo"/>
          </item>
-         <item row="1" column="0">
+         <!-- row 1: output peak meter (added programmatically) -->
+         <!-- row 2: Output ASIO channel -->
+         <item row="2" column="0">
+          <widget class="QLabel" name="asioOutChannelLabel">
+           <property name="text">
+            <string>出力ASIOチャンネル:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QSpinBox" name="asioOutStartChSpin">
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>64</number>
+           </property>
+           <property name="value">
+            <number>1</number>
+           </property>
+           <property name="prefix">
+            <string>開始: </string>
+           </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <horstretch>1</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="2">
+          <widget class="QSpinBox" name="asioOutEndChSpin">
+           <property name="minimum">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <number>64</number>
+           </property>
+           <property name="value">
+            <number>2</number>
+           </property>
+           <property name="prefix">
+            <string>終了: </string>
+           </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <horstretch>1</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+          </widget>
+         </item>
+         <!-- row 3: Input device -->
+         <item row="3" column="0">
           <widget class="QLabel" name="inputAudioLabel">
            <property name="text">
             <string>入力デバイス:</string>
            </property>
           </widget>
          </item>
-         <item row="1" column="1" colspan="2">
+         <item row="3" column="1" colspan="2">
           <widget class="QComboBox" name="inputAudioCombo"/>
          </item>
-         <item row="2" column="0">
+         <!-- row 4: input peak meter (added programmatically) -->
+         <!-- row 5: Input ASIO channel -->
+         <item row="5" column="0">
           <widget class="QLabel" name="asioChannelLabel">
            <property name="text">
-            <string>ASIOチャンネル:</string>
+            <string>入力ASIOチャンネル:</string>
            </property>
           </widget>
          </item>
-         <item row="2" column="1">
+         <item row="5" column="1">
           <widget class="QSpinBox" name="asioStartChSpin">
            <property name="minimum">
             <number>1</number>
@@ -494,9 +551,15 @@
            <property name="prefix">
             <string>開始: </string>
            </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <horstretch>1</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
           </widget>
          </item>
-         <item row="2" column="2">
+         <item row="5" column="2">
           <widget class="QSpinBox" name="asioEndChSpin">
            <property name="minimum">
             <number>1</number>
@@ -510,27 +573,34 @@
            <property name="prefix">
             <string>終了: </string>
            </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <horstretch>1</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
           </widget>
          </item>
-         <item row="3" column="0">
+         <!-- row 6: Codec -->
+         <item row="6" column="0">
           <widget class="QLabel" name="audioCodecLabel">
            <property name="text">
             <string>コーデック:</string>
            </property>
           </widget>
          </item>
-         <item row="3" column="1" colspan="2">
+         <item row="6" column="1" colspan="2">
           <widget class="QComboBox" name="audioCodecCombo"/>
          </item>
-         <!-- Bitrate row (for AAC/MP3/WMA/Opus) -->
-         <item row="4" column="0">
+         <!-- row 7: Bitrate (for AAC/MP3/WMA/Opus) -->
+         <item row="7" column="0">
           <widget class="QLabel" name="audioBitrateLabel">
            <property name="text">
             <string>ビットレート:</string>
            </property>
           </widget>
          </item>
-         <item row="4" column="1">
+         <item row="7" column="1">
           <widget class="QSlider" name="audioBitrateSlider">
            <property name="orientation">
             <enum>Qt::Horizontal</enum>
@@ -552,7 +622,7 @@
            </property>
           </widget>
          </item>
-         <item row="4" column="2">
+         <item row="7" column="2">
           <widget class="QSpinBox" name="audioBitrateSpinBox">
            <property name="minimum">
             <number>32</number>
@@ -571,15 +641,15 @@
            </property>
           </widget>
          </item>
-         <!-- Sample Rate row (for PCM) -->
-         <item row="5" column="0">
+         <!-- row 8: Sample Rate (for PCM) -->
+         <item row="8" column="0">
           <widget class="QLabel" name="audioSampleRateLabel">
            <property name="text">
             <string>サンプリングレート:</string>
            </property>
           </widget>
          </item>
-         <item row="5" column="1" colspan="2">
+         <item row="8" column="1" colspan="2">
           <widget class="QComboBox" name="audioSampleRateCombo">
            <item>
             <property name="text">
@@ -598,15 +668,15 @@
            </item>
           </widget>
          </item>
-         <!-- Bit Depth row (for PCM) -->
-         <item row="6" column="0">
+         <!-- row 9: Bit Depth (for PCM) -->
+         <item row="9" column="0">
           <widget class="QLabel" name="audioBitDepthLabel">
            <property name="text">
             <string>ビット深度:</string>
            </property>
           </widget>
          </item>
-         <item row="6" column="1" colspan="2">
+         <item row="9" column="1" colspan="2">
           <widget class="QComboBox" name="audioBitDepthCombo">
            <item>
             <property name="text">
@@ -625,15 +695,15 @@
            </item>
           </widget>
          </item>
-         <!-- Vorbis Quality row -->
-         <item row="7" column="0">
+         <!-- row 10: Vorbis Quality -->
+         <item row="10" column="0">
           <widget class="QLabel" name="vorbisQualityLabel">
            <property name="text">
             <string>品質:</string>
            </property>
           </widget>
          </item>
-         <item row="7" column="1" colspan="2">
+         <item row="10" column="1" colspan="2">
           <widget class="QSlider" name="vorbisQualitySlider">
            <property name="orientation">
             <enum>Qt::Horizontal</enum>

@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QStyleFactory>
 #include <QDir>
+#include <QIcon>
 #include <Windows.h>
 #include <shellscalingapi.h>
 
@@ -12,7 +13,7 @@ int main(int argc, char* argv[]) {
 
     QApplication app(argc, argv);
     app.setApplicationName("pbRecorder");
-    app.setApplicationVersion("0.3.0");
+    app.setApplicationVersion("0.4.0");
     app.setOrganizationName("pbRecorder");
 
     app.setStyle(QStyleFactory::create("Fusion"));
@@ -40,6 +41,9 @@ int main(int argc, char* argv[]) {
         "QGroupBox { border: 1px solid #555; border-radius: 4px; margin-top: 1em; padding-top: 0.5em; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
     );
+
+    // Set application icon
+    app.setWindowIcon(QIcon(QCoreApplication::applicationDirPath() + "/icon.png"));
 
     QString outputDir = QCoreApplication::applicationDirPath() + "/Output";
     QDir().mkpath(outputDir);

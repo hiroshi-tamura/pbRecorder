@@ -53,7 +53,8 @@ enum class CaptureMode {
 enum class AudioDeviceType {
     WASAPI_Render,    // System audio (loopback)
     WASAPI_Capture,   // Microphone
-    ASIO
+    ASIO,             // ASIO input (recording from interface inputs)
+    ASIO_Output       // ASIO output (recording what the interface is playing back)
 };
 
 struct MonitorInfo {

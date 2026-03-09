@@ -9,6 +9,8 @@
 
 #include "core/Types.h"
 
+class PeakMeterWidget;
+
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
@@ -118,4 +120,11 @@ private:
     QElapsedTimer recordingElapsed_;
     int64_t pausedAccumMs_ = 0;
     int64_t pauseStartMs_ = 0;
+
+    // Peak meters
+    PeakMeterWidget* outputMeter_ = nullptr;
+    PeakMeterWidget* inputMeter_ = nullptr;
+    QTimer meterTimer_;
+    void setupPeakMeters();
+    void updatePeakMeters();
 };

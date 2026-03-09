@@ -26,6 +26,31 @@
 #include <QStyle>
 
 #include "SettingsDialog.h"
+#include "PeakMeterWidget.h"
+
+#include <mmdeviceapi.h>
+
+// MinGW's endpointvolume.h only forward-declares IAudioMeterInformation.
+// Define the COM interface manually.
+#include <endpointvolume.h>
+
+#ifndef __IAudioMeterInformation_INTERFACE_DEFINED__
+#define __IAudioMeterInformation_INTERFACE_DEFINED__
+
+MIDL_INTERFACE("C02216F6-8C67-4B5B-9D00-D008E73E0064")
+IAudioMeterInformation : public IUnknown
+{
+    virtual HRESULT STDMETHODCALLTYPE GetPeakValue(float *pfPeak) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetMeteringChannelCount(UINT *pnChannelCount) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetChannelsPeakValues(UINT32 u32ChannelCount, float *afPeakValues) = 0;
+    virtual HRESULT STDMETHODCALLTYPE QueryHardwareSupport(DWORD *pdwHardwareSupportMask) = 0;
+};
+
+static const GUID IID_IAudioMeterInformation = {
+    0xC02216F6, 0x8C67, 0x4B5B,
+    {0x9D, 0x00, 0xD0, 0x08, 0xE7, 0x3E, 0x00, 0x64}
+};
+#endif
 
 // ============================================================================
 // Construction / Destruction
@@ -68,6 +93,9 @@ MainWindow::MainWindow(QWidget *parent)
     QDir().mkpath(outputDir);
     ui->outputDirEdit->setText(QDir::toNativeSeparators(outputDir));
     updateAutoFileName();
+
+    // Setup peak meters under audio device combos
+    setupPeakMeters();
 
     // Load presets and restore last session
     loadPresets();
@@ -141,19 +169,40 @@ void MainWindow::setupConnections()
     connect(ui->audioBitrateSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &MainWindow::onAudioBitrateSpinBoxChanged);
 
-    // ASIO channel visibility
-    connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
+    // ASIO channel visibility — separate for output and input
+    auto updateAsioOutVisibility = [this]() {
         bool isAsio = false;
-        if (index > 0 && (index - 1) < static_cast<int>(inputAudioDevices_.size())) {
-            isAsio = (inputAudioDevices_[index - 1].type == pb::AudioDeviceType::ASIO);
+        int outIdx = ui->outputAudioCombo->currentIndex();
+        if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
+            auto t = outputAudioDevices_[outIdx - 1].type;
+            if (t == pb::AudioDeviceType::ASIO || t == pb::AudioDeviceType::ASIO_Output)
+                isAsio = true;
+        }
+        ui->asioOutChannelLabel->setVisible(isAsio);
+        ui->asioOutStartChSpin->setVisible(isAsio);
+        ui->asioOutEndChSpin->setVisible(isAsio);
+    };
+    auto updateAsioInVisibility = [this]() {
+        bool isAsio = false;
+        int inIdx = ui->inputAudioCombo->currentIndex();
+        if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
+            auto t = inputAudioDevices_[inIdx - 1].type;
+            if (t == pb::AudioDeviceType::ASIO || t == pb::AudioDeviceType::ASIO_Output)
+                isAsio = true;
         }
         ui->asioChannelLabel->setVisible(isAsio);
         ui->asioStartChSpin->setVisible(isAsio);
         ui->asioEndChSpin->setVisible(isAsio);
-    });
+    };
+    connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, updateAsioOutVisibility);
+    connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, updateAsioInVisibility);
 
-    // Initially hide ASIO channel controls
+    // Initially hide all ASIO channel controls
+    ui->asioOutChannelLabel->setVisible(false);
+    ui->asioOutStartChSpin->setVisible(false);
+    ui->asioOutEndChSpin->setVisible(false);
     ui->asioChannelLabel->setVisible(false);
     ui->asioStartChSpin->setVisible(false);
     ui->asioEndChSpin->setVisible(false);
@@ -543,16 +592,22 @@ void MainWindow::populateAudioDevices()
     try {
         auto asioDevs = pb::AsioCapture::enumerateDevices();
         for (auto& d : asioDevs) {
-            inputAudioDevices_.push_back(std::move(d));
+            if (d.type == pb::AudioDeviceType::ASIO_Output) {
+                outputAudioDevices_.push_back(std::move(d));
+            } else {
+                inputAudioDevices_.push_back(std::move(d));
+            }
         }
     } catch (const std::exception& e) {
         qWarning() << "ASIO enumeration failed:" << e.what();
     }
 
-    // Output devices (system audio / speakers)
+    // Output devices (system audio / speakers / ASIO output)
     ui->outputAudioCombo->addItem(tr("なし"));
     for (const auto& dev : outputAudioDevices_) {
-        ui->outputAudioCombo->addItem(QString::fromStdWString(dev.name));
+        QString prefix;
+        if (dev.type == pb::AudioDeviceType::ASIO_Output) prefix = "[ASIO] ";
+        ui->outputAudioCombo->addItem(prefix + QString::fromStdWString(dev.name));
     }
     // Default: select first device if available
     if (!outputAudioDevices_.empty()) {
@@ -861,6 +916,12 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
     if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
         config.useOutputAudio = true;
         config.outputAudioDevice = outputAudioDevices_[outIdx - 1];
+        // Output ASIO channel range (UI is 1-based, internal is 0-based)
+        if (config.outputAudioDevice.type == pb::AudioDeviceType::ASIO_Output ||
+            config.outputAudioDevice.type == pb::AudioDeviceType::ASIO) {
+            config.outputAudioDevice.asioStartChannel = ui->asioOutStartChSpin->value() - 1;
+            config.outputAudioDevice.asioEndChannel = ui->asioOutEndChSpin->value() - 1;
+        }
     } else {
         config.useOutputAudio = false;
     }
@@ -870,8 +931,9 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
     if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
         config.useInputAudio = true;
         config.inputAudioDevice = inputAudioDevices_[inIdx - 1];
-        // ASIO channel range (UI is 1-based, internal is 0-based)
-        if (config.inputAudioDevice.type == pb::AudioDeviceType::ASIO) {
+        // Input ASIO channel range (UI is 1-based, internal is 0-based)
+        if (config.inputAudioDevice.type == pb::AudioDeviceType::ASIO ||
+            config.inputAudioDevice.type == pb::AudioDeviceType::ASIO_Output) {
             config.inputAudioDevice.asioStartChannel = ui->asioStartChSpin->value() - 1;
             config.inputAudioDevice.asioEndChannel = ui->asioEndChSpin->value() - 1;
         }
@@ -1122,6 +1184,8 @@ void MainWindow::saveSettings()
     s["h264Profile"] = ui->h264ProfileCombo->currentIndex();
     s["h264Level"] = ui->h264LevelCombo->currentIndex();
     s["captureCursor"] = ui->captureCursorCheck->isChecked();
+    s["asioOutStartCh"] = ui->asioOutStartChSpin->value();
+    s["asioOutEndCh"] = ui->asioOutEndChSpin->value();
     s["asioStartCh"] = ui->asioStartChSpin->value();
     s["asioEndCh"] = ui->asioEndChSpin->value();
     s["outputDir"] = ui->outputDirEdit->text();
@@ -1204,6 +1268,10 @@ void MainWindow::loadSettings()
         if (idx >= 0 && idx < ui->inputAudioCombo->count())
             ui->inputAudioCombo->setCurrentIndex(idx);
     }
+    if (s.contains("asioOutStartCh"))
+        ui->asioOutStartChSpin->setValue(s["asioOutStartCh"].toInt());
+    if (s.contains("asioOutEndCh"))
+        ui->asioOutEndChSpin->setValue(s["asioOutEndCh"].toInt());
     if (s.contains("asioStartCh"))
         ui->asioStartChSpin->setValue(s["asioStartCh"].toInt());
     if (s.contains("asioEndCh"))
@@ -1310,7 +1378,8 @@ void MainWindow::retranslateUi()
     ui->inputAudioLabel->setText(ja ? "入力デバイス:" : "Input device:");
     ui->outputAudioCombo->setItemText(0, ja ? "なし" : "None");
     ui->inputAudioCombo->setItemText(0, ja ? "なし" : "None");
-    ui->asioChannelLabel->setText(ja ? "ASIOチャンネル:" : "ASIO channel:");
+    ui->asioOutChannelLabel->setText(ja ? "出力ASIOチャンネル:" : "Output ASIO ch:");
+    ui->asioChannelLabel->setText(ja ? "入力ASIOチャンネル:" : "Input ASIO ch:");
     ui->audioCodecLabel->setText(ja ? "コーデック:" : "Codec:");
     ui->audioBitrateLabel->setText(ja ? "ビットレート:" : "Bitrate:");
     ui->audioSampleRateLabel->setText(ja ? "サンプリングレート:" : "Sample rate:");
@@ -1337,5 +1406,90 @@ void MainWindow::retranslateUi()
         ui->pauseBtn->setText(ja ? "一時停止" : "Pause");
     } else {
         ui->pauseBtn->setText(ja ? "再開" : "Resume");
+    }
+}
+
+// ============================================================================
+// Peak Meters
+// ============================================================================
+
+void MainWindow::setupPeakMeters()
+{
+    outputMeter_ = new PeakMeterWidget(this);
+    inputMeter_ = new PeakMeterWidget(this);
+
+    auto* audioLayout = qobject_cast<QGridLayout*>(ui->audioGroupBox->layout());
+    if (audioLayout) {
+        // UI layout rows:
+        // row 0: output device label + combo
+        // row 1: output peak meter  (added here)
+        // row 2: output ASIO channel (in .ui)
+        // row 3: input device label + combo (in .ui)
+        // row 4: input peak meter   (added here)
+        // row 5: input ASIO channel (in .ui)
+        // row 6+: codec, bitrate, etc.
+        audioLayout->addWidget(outputMeter_, 1, 0, 1, 3);
+        audioLayout->addWidget(inputMeter_, 4, 0, 1, 3);
+    }
+
+    // Start meter update timer (50ms = 20fps)
+    connect(&meterTimer_, &QTimer::timeout, this, &MainWindow::updatePeakMeters);
+    meterTimer_.start(50);
+}
+
+// Helper: get peak level from WASAPI device using IAudioMeterInformation
+static float getWasapiPeakLevel(const std::wstring& deviceId) {
+    if (deviceId.empty()) return 0.0f;
+
+    IMMDeviceEnumerator* enumerator = nullptr;
+    HRESULT hr = CoCreateInstance(
+        __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+        __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator));
+    if (FAILED(hr) || !enumerator) return 0.0f;
+
+    IMMDevice* device = nullptr;
+    hr = enumerator->GetDevice(deviceId.c_str(), &device);
+    enumerator->Release();
+    if (FAILED(hr) || !device) return 0.0f;
+
+    IAudioMeterInformation* meter = nullptr;
+    hr = device->Activate(IID_IAudioMeterInformation, CLSCTX_ALL,
+                          nullptr, reinterpret_cast<void**>(&meter));
+    device->Release();
+    if (FAILED(hr) || !meter) return 0.0f;
+
+    float peak = 0.0f;
+    meter->GetPeakValue(&peak);
+    meter->Release();
+
+    return peak;
+}
+
+void MainWindow::updatePeakMeters()
+{
+    // Output device meter
+    int outIdx = ui->outputAudioCombo->currentIndex();
+    if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
+        const auto& dev = outputAudioDevices_[outIdx - 1];
+        if (dev.type == pb::AudioDeviceType::WASAPI_Render) {
+            outputMeter_->setLevel(getWasapiPeakLevel(dev.id));
+        } else {
+            outputMeter_->setLevel(0.0f);
+        }
+    } else {
+        outputMeter_->setLevel(0.0f);
+    }
+
+    // Input device meter
+    int inIdx = ui->inputAudioCombo->currentIndex();
+    if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
+        const auto& dev = inputAudioDevices_[inIdx - 1];
+        if (dev.type == pb::AudioDeviceType::WASAPI_Capture) {
+            inputMeter_->setLevel(getWasapiPeakLevel(dev.id));
+        } else {
+            inputMeter_->setLevel(0.0f);
+        }
+    } else {
+        inputMeter_->setLevel(0.0f);
     }
 }

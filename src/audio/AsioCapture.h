@@ -9,8 +9,11 @@
 #include <vector>
 
 #ifdef ASIO_AVAILABLE
-#include "third_party/asiosdk/common/asio.h"
-#include "third_party/asiosdk/host/asiodrivers.h"
+#include <objbase.h>   // Defines 'interface' keyword needed by ASIO SDK on MinGW
+#include "asiosys.h"   // Must be included before asio.h to set IEEE754_64FLOAT
+#include "asio.h"
+#include "iasiodrv.h"
+#include "asiodrivers.h"
 #endif
 
 #include <windows.h>
@@ -60,6 +63,8 @@ private:
     long bufferGranularity_ = 0;
     ASIOSampleType sampleType_ = ASIOSTInt16LSB;
     ASIOCallbacks asioCallbacks_{};
+    bool isOutputCapture_ = false;  // true = capture output channels
+    long activeChannels_ = 0;       // total channels being captured
 
     static AsioCapture* instance_;
 #endif

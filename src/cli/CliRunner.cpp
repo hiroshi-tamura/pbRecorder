@@ -261,12 +261,20 @@ int CliRunner::listAudioDevices() {
     auto wasapiDevices = pb::WasapiCapture::enumerateDevices();
     auto asioDevices = pb::AsioCapture::enumerateDevices();
 
-    // Split WASAPI into render (output) and capture (input)
+    // Split into output and input
     out() << "Output devices (speakers/loopback):" << Qt::endl;
     int idx = 0;
     for (const auto& d : wasapiDevices) {
         if (d.type == pb::AudioDeviceType::WASAPI_Render) {
             out() << QString("  %1: %2")
+                         .arg(idx).arg(QString::fromStdWString(d.name))
+                  << Qt::endl;
+            ++idx;
+        }
+    }
+    for (const auto& d : asioDevices) {
+        if (d.type == pb::AudioDeviceType::ASIO_Output) {
+            out() << QString("  %1: [ASIO] %2")
                          .arg(idx).arg(QString::fromStdWString(d.name))
                   << Qt::endl;
             ++idx;
@@ -283,14 +291,12 @@ int CliRunner::listAudioDevices() {
             ++idx;
         }
     }
-
-    if (!asioDevices.empty()) {
-        out() << "\nASIO devices:" << Qt::endl;
-        idx = 0;
-        for (const auto& d : asioDevices) {
+    for (const auto& d : asioDevices) {
+        if (d.type == pb::AudioDeviceType::ASIO) {
             out() << QString("  %1: [ASIO] %2")
-                         .arg(idx++).arg(QString::fromStdWString(d.name))
+                         .arg(idx).arg(QString::fromStdWString(d.name))
                   << Qt::endl;
+            ++idx;
         }
     }
 

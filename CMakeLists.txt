@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.3.0 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -194,14 +194,20 @@ set(CLI_ALL_SOURCES
     ${CLI_SOURCES}
 )
 
-# ASIO sources
+# ASIO SDK sources (added to both GUI and CLI)
 if(ASIO_AVAILABLE)
-    list(APPEND ALL_SOURCES src/audio/AsioCapture.cpp)
-    list(APPEND ALL_SOURCES
+    set(ASIO_SDK_SOURCES
         ${ASIO_SDK_DIR}/common/asio.cpp
         ${ASIO_SDK_DIR}/host/asiodrivers.cpp
         ${ASIO_SDK_DIR}/host/pc/asiolist.cpp
     )
+    # ASIO SDK needs 'interface' keyword (via objbase.h) and asiosys.h for IEEE754_64FLOAT
+    # Also must undo UNICODE since ASIO SDK uses ANSI Win32 API
+    set_source_files_properties(${ASIO_SDK_SOURCES} PROPERTIES
+        COMPILE_FLAGS "-include objbase.h -include asiosys.h -UUNICODE -U_UNICODE"
+    )
+    list(APPEND ALL_SOURCES ${ASIO_SDK_SOURCES})
+    list(APPEND CLI_ALL_SOURCES ${ASIO_SDK_SOURCES})
 endif()
 
 add_executable(${PROJECT_NAME} WIN32 ${ALL_SOURCES} ${UI_FILES} resources/pbRecorder.rc)

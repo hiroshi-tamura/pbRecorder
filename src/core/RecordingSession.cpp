@@ -351,6 +351,7 @@ std::unique_ptr<IAudioSource> RecordingSession::createAudioSource(AudioDeviceTyp
             return std::make_unique<WasapiCapture>();
 #ifdef ASIO_AVAILABLE
         case AudioDeviceType::ASIO:
+        case AudioDeviceType::ASIO_Output:
             return std::make_unique<AsioCapture>();
 #endif
         default:

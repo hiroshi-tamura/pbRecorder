@@ -79,15 +79,25 @@ std::vector<AudioDeviceInfo> AsioCapture::enumerateDevices() {
                 wcscpy(description, subKeyName);
             }
 
-            AudioDeviceInfo info;
-            info.id = clsidStr;
-            info.name = description;
-            info.type = AudioDeviceType::ASIO;
-            // Default values; actual values determined after opening the driver
-            info.channelCount = 2;
-            info.sampleRate = 48000;
-            info.bitsPerSample = 32;
-            result.push_back(std::move(info));
+            // Add as input device (recording from interface inputs)
+            AudioDeviceInfo inputInfo;
+            inputInfo.id = clsidStr;
+            inputInfo.name = std::wstring(description) + L" (In)";
+            inputInfo.type = AudioDeviceType::ASIO;
+            inputInfo.channelCount = 2;
+            inputInfo.sampleRate = 48000;
+            inputInfo.bitsPerSample = 32;
+            result.push_back(std::move(inputInfo));
+
+            // Add as output device (recording what the interface plays back)
+            AudioDeviceInfo outputInfo;
+            outputInfo.id = clsidStr;
+            outputInfo.name = std::wstring(description) + L" (Out)";
+            outputInfo.type = AudioDeviceType::ASIO_Output;
+            outputInfo.channelCount = 2;
+            outputInfo.sampleRate = 48000;
+            outputInfo.bitsPerSample = 32;
+            result.push_back(std::move(outputInfo));
         }
 
         RegCloseKey(driverKey);
@@ -98,7 +108,7 @@ std::vector<AudioDeviceInfo> AsioCapture::enumerateDevices() {
 }
 
 // ============================================================================
-// initialize
+// initialize - uses AsioDrivers to load driver, then global ASIOxxx() API
 // ============================================================================
 bool AsioCapture::initialize(const AudioDeviceInfo& device) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -107,81 +117,83 @@ bool AsioCapture::initialize(const AudioDeviceInfo& device) {
     releaseResources();
 
     deviceInfo_ = device;
+    isOutputCapture_ = (device.type == AudioDeviceType::ASIO_Output);
 
-    // Convert CLSID string to CLSID
-    CLSID clsid;
-    if (CLSIDFromString(device.id.c_str(), &clsid) != S_OK) {
-        reportError("Invalid ASIO driver CLSID: " +
-                     std::string(device.id.begin(), device.id.end()));
+    // Use AsioDrivers to load the driver by name
+    // Strip " (In)" / " (Out)" suffix added by enumerateDevices
+    asioDrivers_ = new AsioDrivers();
+    std::wstring wname = device.name;
+    if (wname.size() > 5 && (wname.substr(wname.size() - 5) == L" (In)" ||
+                              wname.substr(wname.size() - 6) == L" (Out)")) {
+        size_t pos = wname.rfind(L" (");
+        if (pos != std::wstring::npos) wname = wname.substr(0, pos);
+    }
+    std::string driverName(wname.begin(), wname.end());
+    if (!asioDrivers_->loadDriver(const_cast<char*>(driverName.c_str()))) {
+        reportError("Failed to load ASIO driver: " + driverName);
+        delete asioDrivers_;
+        asioDrivers_ = nullptr;
         return false;
     }
 
-    // Create ASIO driver via COM
-    IASIO* asioDriver = nullptr;
-    HRESULT hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER,
-                                  clsid, reinterpret_cast<void**>(&asioDriver));
-    if (FAILED(hr) || !asioDriver) {
-        reportError("Failed to create ASIO driver instance");
-        return false;
-    }
-
-    // Initialize the ASIO driver
+    // Initialize the ASIO driver via global API
     memset(&driverInfo_, 0, sizeof(driverInfo_));
     driverInfo_.asioVersion = 2;
     driverInfo_.sysRef = GetDesktopWindow();
 
-    if (asioDriver->init(&driverInfo_.sysRef) != ASIOTrue) {
+    if (ASIOInit(&driverInfo_) != ASE_OK) {
         reportError("ASIO driver init failed: " + std::string(driverInfo_.errorMessage));
-        asioDriver->Release();
+        asioDrivers_->removeCurrentDriver();
+        delete asioDrivers_;
+        asioDrivers_ = nullptr;
         return false;
     }
 
     // Query channels
-    if (asioDriver->getChannels(&inputChannels_, &outputChannels_) != ASE_OK) {
+    if (ASIOGetChannels(&inputChannels_, &outputChannels_) != ASE_OK) {
         reportError("Failed to get ASIO channel count");
-        asioDriver->Release();
         return false;
     }
 
-    if (inputChannels_ <= 0) {
-        reportError("ASIO driver has no input channels");
-        asioDriver->Release();
+    long totalChannels = isOutputCapture_ ? outputChannels_ : inputChannels_;
+    if (totalChannels <= 0) {
+        reportError(isOutputCapture_ ? "ASIO driver has no output channels"
+                                     : "ASIO driver has no input channels");
         return false;
     }
 
     // Determine channel range
     long startCh = device.asioStartChannel;
     long endCh = device.asioEndChannel;
-    if (endCh < 0 || endCh >= inputChannels_) endCh = inputChannels_ - 1;
+    if (endCh < 0 || endCh >= totalChannels) endCh = totalChannels - 1;
     if (startCh < 0) startCh = 0;
     if (startCh > endCh) startCh = endCh;
     channelCount_ = static_cast<int>(endCh - startCh + 1);
 
     // Query sample rate
-    ASIOSampleRate currentRate = 0;
-    if (asioDriver->getSampleRate(&currentRate) == ASE_OK) {
+    ASIOSampleRate currentRate;
+    if (ASIOGetSampleRate(&currentRate) == ASE_OK) {
         sampleRate_ = static_cast<int>(currentRate);
     } else {
         sampleRate_ = 48000;
-        asioDriver->setSampleRate(48000.0);
+        ASIOSetSampleRate(48000.0);
     }
 
     // Query buffer sizes
-    if (asioDriver->getBufferSize(&minBufferSize_, &maxBufferSize_,
-                                   &preferredBufferSize_, &bufferGranularity_) != ASE_OK) {
+    if (ASIOGetBufferSize(&minBufferSize_, &maxBufferSize_,
+                          &preferredBufferSize_, &bufferGranularity_) != ASE_OK) {
         reportError("Failed to get ASIO buffer sizes");
-        asioDriver->Release();
         return false;
     }
 
     // Query channel info to determine sample type
-    channelInfos_ = new ASIOChannelInfo[inputChannels_];
-    for (long ch = 0; ch < inputChannels_; ++ch) {
+    ASIOBool isInput = isOutputCapture_ ? ASIOFalse : ASIOTrue;
+    channelInfos_ = new ASIOChannelInfo[totalChannels];
+    for (long ch = 0; ch < totalChannels; ++ch) {
         channelInfos_[ch].channel = ch;
-        channelInfos_[ch].isInput = ASIOTrue;
-        if (asioDriver->getChannelInfo(&channelInfos_[ch]) != ASE_OK) {
+        channelInfos_[ch].isInput = isInput;
+        if (ASIOGetChannelInfo(&channelInfos_[ch]) != ASE_OK) {
             reportError("Failed to get ASIO channel info");
-            asioDriver->Release();
             return false;
         }
     }
@@ -197,10 +209,10 @@ bool AsioCapture::initialize(const AudioDeviceInfo& device) {
         default: bitsPerSample_ = 32; break;
     }
 
-    // Allocate buffer infos for input channels
-    bufferInfos_ = new ASIOBufferInfo[inputChannels_];
-    for (long ch = 0; ch < inputChannels_; ++ch) {
-        bufferInfos_[ch].isInput = ASIOTrue;
+    // Allocate buffer infos for the channels we're capturing
+    bufferInfos_ = new ASIOBufferInfo[totalChannels];
+    for (long ch = 0; ch < totalChannels; ++ch) {
+        bufferInfos_[ch].isInput = isInput;
         bufferInfos_[ch].channelNum = ch;
         bufferInfos_[ch].buffers[0] = nullptr;
         bufferInfos_[ch].buffers[1] = nullptr;
@@ -213,17 +225,12 @@ bool AsioCapture::initialize(const AudioDeviceInfo& device) {
     asioCallbacks_.bufferSwitchTimeInfo = &AsioCapture::bufferSwitchTimeInfoCallback;
 
     // Create buffers
-    if (asioDriver->createBuffers(bufferInfos_, inputChannels_,
-                                   preferredBufferSize_, &asioCallbacks_) != ASE_OK) {
+    activeChannels_ = totalChannels;
+    if (ASIOCreateBuffers(bufferInfos_, totalChannels,
+                          preferredBufferSize_, &asioCallbacks_) != ASE_OK) {
         reportError("Failed to create ASIO buffers");
-        asioDriver->Release();
         return false;
     }
-
-    // Store the driver (we keep it alive via the AsioDrivers mechanism)
-    // Note: actual ASIO SDK usage keeps the driver loaded via loadAsioDriver
-    // For direct COM instantiation, we hold the reference.
-    // The IASIO pointer is used through the global ASIOxxx() functions.
 
     initialized_ = true;
     return true;
@@ -266,7 +273,7 @@ void AsioCapture::bufferSwitchCallback(long index, ASIOBool processNow) {
 
 void AsioCapture::sampleRateDidChangeCallback(ASIOSampleRate sRate) {
     if (instance_) {
-        instance_->sampleRate_ = static_cast<int>(sRate);
+        instance_->sampleRate_ = static_cast<int>(static_cast<double>(sRate));
     }
 }
 
@@ -320,7 +327,7 @@ void AsioCapture::convertAndDeliver(long bufferIndex) {
     // Determine channel range
     long startCh = deviceInfo_.asioStartChannel;
     long endCh = deviceInfo_.asioEndChannel;
-    if (endCh < 0 || endCh >= inputChannels_) endCh = inputChannels_ - 1;
+    if (endCh < 0 || endCh >= activeChannels_) endCh = activeChannels_ - 1;
     if (startCh < 0) startCh = 0;
     if (startCh > endCh) startCh = endCh;
     int outChannels = static_cast<int>(endCh - startCh + 1);
@@ -418,6 +425,12 @@ void AsioCapture::releaseResources() {
     if (initialized_) {
         ASIODisposeBuffers();
         ASIOExit();
+    }
+
+    if (asioDrivers_) {
+        asioDrivers_->removeCurrentDriver();
+        delete asioDrivers_;
+        asioDrivers_ = nullptr;
     }
 
     delete[] bufferInfos_;
