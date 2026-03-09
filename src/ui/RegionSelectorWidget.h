@@ -67,6 +67,4 @@ private:
     Edge draggingEdge_ = EdgeNone;
     QRect adjustedSelection_;
 
-    // Physical monitor tracking for multi-DPI coordinate conversion
-    HMONITOR selectionMonitor_ = nullptr;
 };

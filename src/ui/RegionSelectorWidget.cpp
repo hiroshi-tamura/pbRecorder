@@ -41,6 +41,7 @@ RegionSelectorWidget::RegionSelectorWidget(QWidget *parent)
         "}");
     dimensionLabel_->hide();
 
+    // Initial geometry (will be corrected in showEvent via SetWindowPos)
     QRect vd = virtualDesktopGeometry();
     setGeometry(vd);
 }
@@ -55,13 +56,27 @@ void RegionSelectorWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
 
-    QRect vd = virtualDesktopGeometry();
-    setGeometry(vd);
+    // Use SetWindowPos to cover the ENTIRE physical virtual desktop.
+    // Qt's logical virtual desktop geometry may not cover the full physical
+    // extent of high-DPI monitors (e.g., a 4K@150% monitor would have a
+    // smaller logical height, cutting off the bottom of the overlay).
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    SetWindowPos(hwnd, HWND_TOPMOST,
+                 GetSystemMetrics(SM_XVIRTUALSCREEN),
+                 GetSystemMetrics(SM_YVIRTUALSCREEN),
+                 GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                 GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                 SWP_SHOWWINDOW);
 
-    QScreen *screen = QGuiApplication::primaryScreen();
-    if (screen) {
-        devicePixelRatio_ = screen->devicePixelRatio();
-    }
+    // Force foreground and input focus so the FIRST click works.
+    // Without this, Qt::Tool windows may consume the first click
+    // for window activation instead of passing it to mousePressEvent.
+    SetForegroundWindow(hwnd);
+
+    // Store the widget's effective DPR (determined by the monitor containing
+    // the majority of the window). This single DPR is used consistently for
+    // all coordinate conversions.
+    devicePixelRatio_ = devicePixelRatio();
 
     if (autoAdjust_) {
         captureScreenImage();
@@ -155,11 +170,6 @@ void RegionSelectorWidget::mousePressEvent(QMouseEvent *event)
                 return;
             }
         }
-
-        // Track physical cursor position to determine the correct monitor
-        POINT physPt;
-        GetCursorPos(&physPt);
-        selectionMonitor_ = MonitorFromPoint(physPt, MONITOR_DEFAULTTONEAREST);
 
         selecting_ = true;
         hasSelection_ = false;
@@ -269,19 +279,6 @@ void RegionSelectorWidget::mouseReleaseEvent(QMouseEvent *event)
 
             if (sel.width() > 5 && sel.height() > 5) {
                 hasSelection_ = true;
-
-                // Update selectionMonitor_ to the monitor at the center
-                // of the final selection (handles cross-monitor drags)
-                QPoint globalCenter = mapToGlobal(sel.center());
-                QScreen *centerScreen = QGuiApplication::screenAt(globalCenter);
-                if (centerScreen) {
-                    qreal dpr = centerScreen->devicePixelRatio();
-                    int estPhysX = static_cast<int>(globalCenter.x() * dpr);
-                    int estPhysY = static_cast<int>(globalCenter.y() * dpr);
-                    POINT pt = { estPhysX, estPhysY };
-                    selectionMonitor_ = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-                }
-
                 updateDimensionLabel();
             } else {
                 hasSelection_ = false;
@@ -323,59 +320,39 @@ void RegionSelectorWidget::keyPressEvent(QKeyEvent *event)
 
 QRect RegionSelectorWidget::virtualDesktopGeometry() const
 {
-    QRect combined;
-    const auto screens = QGuiApplication::screens();
-    for (const QScreen *screen : screens) {
-        combined = combined.united(screen->geometry());
-    }
-    return combined;
+    // Use the physical virtual screen rect from Windows API.
+    // Qt's logical screen geometries may not cover the full physical extent
+    // when monitors have different DPIs (a 4K@150% monitor has a smaller
+    // logical size, so the union of Qt logical rects misses the bottom/right).
+    int physX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int physY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int physW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int physH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    // Convert to Qt logical coordinates using primary screen DPR.
+    // Qt uses this DPR for initial top-level window geometry conversion.
+    QScreen *primary = QGuiApplication::primaryScreen();
+    qreal dpr = primary ? primary->devicePixelRatio() : 1.0;
+
+    return QRect(
+        static_cast<int>(std::floor(physX / dpr)),
+        static_cast<int>(std::floor(physY / dpr)),
+        static_cast<int>(std::ceil(physW / dpr)),
+        static_cast<int>(std::ceil(physH / dpr))
+    );
 }
 
 QRect RegionSelectorWidget::toPhysicalPixels(const QRect &logicalRect) const
 {
-    // Use the tracked physical monitor for accurate per-monitor DPI conversion.
-    // With Per-Monitor V2, Qt's logical coordinates can overlap across screens
-    // with different DPRs, so QGuiApplication::screenAt() may return the wrong
-    // screen. Using the HMONITOR from GetCursorPos() avoids this ambiguity.
-
-    if (selectionMonitor_) {
-        MONITORINFO mi = { sizeof(mi) };
-        GetMonitorInfo(selectionMonitor_, &mi);
-
-        UINT dpiX = 96, dpiY = 96;
-        GetDpiForMonitor(selectionMonitor_, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
-        qreal dpr = static_cast<qreal>(dpiX) / 96.0;
-
-        // Physical screen origin
-        int physOX = mi.rcMonitor.left;
-        int physOY = mi.rcMonitor.top;
-
-        // Logical screen origin (as Qt computes: physical / dpr)
-        qreal logOX = physOX / dpr;
-        qreal logOY = physOY / dpr;
-
-        QPoint globalTL = mapToGlobal(logicalRect.topLeft());
-
-        int physX = physOX + static_cast<int>((globalTL.x() - logOX) * dpr);
-        int physY = physOY + static_cast<int>((globalTL.y() - logOY) * dpr);
-        int physW = static_cast<int>(logicalRect.width() * dpr);
-        int physH = static_cast<int>(logicalRect.height() * dpr);
-
-        return QRect(physX, physY, physW, physH);
-    }
-
-    // Fallback: use primary screen DPR
+    // The overlay covers the entire physical virtual desktop (via SetWindowPos).
+    // The widget uses a single consistent DPR for all coordinates.
+    // Conversion: physical = globalLogical * dpr
     qreal dpr = devicePixelRatio_;
-    QPoint globalCenter = mapToGlobal(logicalRect.center());
-    QScreen *targetScreen = QGuiApplication::screenAt(globalCenter);
-    if (targetScreen) {
-        dpr = targetScreen->devicePixelRatio();
-    }
+    QPoint globalTL = mapToGlobal(logicalRect.topLeft());
 
-    QPoint globalTopLeft = mapToGlobal(logicalRect.topLeft());
     return QRect(
-        static_cast<int>(globalTopLeft.x() * dpr),
-        static_cast<int>(globalTopLeft.y() * dpr),
+        static_cast<int>(globalTL.x() * dpr),
+        static_cast<int>(globalTL.y() * dpr),
         static_cast<int>(logicalRect.width() * dpr),
         static_cast<int>(logicalRect.height() * dpr)
     );
@@ -421,23 +398,39 @@ void RegionSelectorWidget::updateDimensionLabel()
 
 void RegionSelectorWidget::captureScreenImage()
 {
-    // Capture each screen individually and compose into a single image
-    // to handle different DPIs correctly
-    QRect vd = virtualDesktopGeometry();
-    QImage combined(vd.size(), QImage::Format_Grayscale8);
+    // Capture each screen individually and composite into the widget's
+    // coordinate system, handling per-monitor DPI differences.
+    qreal widgetDpr = devicePixelRatio_;
+    int physVX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int physVY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int widgetW = static_cast<int>(std::ceil(GetSystemMetrics(SM_CXVIRTUALSCREEN) / widgetDpr));
+    int widgetH = static_cast<int>(std::ceil(GetSystemMetrics(SM_CYVIRTUALSCREEN) / widgetDpr));
+
+    QImage combined(widgetW, widgetH, QImage::Format_Grayscale8);
     combined.fill(0);
 
     for (QScreen *screen : QGuiApplication::screens()) {
         QPixmap pixmap = screen->grabWindow(0);
         QImage img = pixmap.toImage().convertToFormat(QImage::Format_Grayscale8);
 
-        // Scale to logical size (widget coordinates)
+        // Compute this screen's physical origin and size
+        qreal sDpr = screen->devicePixelRatio();
         QRect logGeom = screen->geometry();
-        QImage scaled = img.scaled(logGeom.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        int sPhysX = static_cast<int>(logGeom.x() * sDpr);
+        int sPhysY = static_cast<int>(logGeom.y() * sDpr);
+        int sPhysW = static_cast<int>(logGeom.width() * sDpr);
+        int sPhysH = static_cast<int>(logGeom.height() * sDpr);
 
-        // Paint into combined image at the screen's logical position
+        // Convert to widget coordinates (physical offset from virtual origin / widgetDpr)
+        int wx = static_cast<int>((sPhysX - physVX) / widgetDpr);
+        int wy = static_cast<int>((sPhysY - physVY) / widgetDpr);
+        int ww = static_cast<int>(sPhysW / widgetDpr);
+        int wh = static_cast<int>(sPhysH / widgetDpr);
+
+        QImage scaled = img.scaled(ww, wh, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+
         QPainter painter(&combined);
-        painter.drawImage(logGeom.topLeft() - vd.topLeft(), scaled);
+        painter.drawImage(wx, wy, scaled);
     }
 
     screenCapture_ = combined;
