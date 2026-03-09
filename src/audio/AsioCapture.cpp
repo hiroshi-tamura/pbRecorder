@@ -488,6 +488,16 @@ void AsioCapture::convertAndDeliver(long bufferIndex) {
         }
     }
 
+    // Calculate peak level for metering
+    {
+        int16_t maxSample = 0;
+        for (long i = 0; i < frames * outChannels; ++i) {
+            int16_t abs = dst[i] < 0 ? -dst[i] : dst[i];
+            if (abs > maxSample) maxSample = abs;
+        }
+        peakLevel_.store(static_cast<float>(maxSample) / 32767.0f);
+    }
+
     // Deliver
     AudioCallback cb;
     {
@@ -553,6 +563,11 @@ int AsioCapture::getSampleRate() const { return sampleRate_; }
 int AsioCapture::getBitsPerSample() const { return bitsPerSample_; }
 bool AsioCapture::isCapturing() const { return capturing_; }
 
+float AsioCapture::getInstancePeakLevel() {
+    if (instance_ && instance_->capturing_) return instance_->peakLevel_.load();
+    return 0.0f;
+}
+
 void AsioCapture::reportError(const std::string& msg) {
     ErrorCallback cb;
     {
@@ -598,6 +613,7 @@ int AsioCapture::getChannelCount() const { return 0; }
 int AsioCapture::getSampleRate() const { return 0; }
 int AsioCapture::getBitsPerSample() const { return 0; }
 bool AsioCapture::isCapturing() const { return false; }
+float AsioCapture::getInstancePeakLevel() { return 0.0f; }
 
 void AsioCapture::reportError(const std::string& msg) {
     ErrorCallback cb;

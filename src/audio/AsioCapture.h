@@ -40,6 +40,9 @@ public:
     // Device enumeration (scans registry for ASIO drivers)
     static std::vector<AudioDeviceInfo> enumerateDevices();
 
+    // Peak level from the active ASIO instance (for metering)
+    static float getInstancePeakLevel();
+
 private:
 #ifdef ASIO_AVAILABLE
     // ASIO callback trampolines (static, forward to singleton instance)
@@ -99,6 +102,11 @@ private:
     int channelCount_ = 0;
     int sampleRate_ = 0;
     int bitsPerSample_ = 16;
+
+    // Peak level for metering (updated in convertAndDeliver, read from UI)
+    std::atomic<float> peakLevel_{0.0f};
+public:
+    float getPeakLevel() const { return peakLevel_.load(); }
 };
 
 } // namespace pb

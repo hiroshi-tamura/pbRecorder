@@ -1594,6 +1594,9 @@ void MainWindow::updatePeakMeters()
         const auto& dev = outputAudioDevices_[outIdx - 1];
         if (dev.type == pb::AudioDeviceType::WASAPI_Render) {
             outputMeter_->setLevel(getWasapiPeakLevel(dev.id));
+        } else if (dev.type == pb::AudioDeviceType::ASIO ||
+                   dev.type == pb::AudioDeviceType::ASIO_Output) {
+            outputMeter_->setLevel(pb::AsioCapture::getInstancePeakLevel());
         } else {
             outputMeter_->setLevel(0.0f);
         }
@@ -1607,6 +1610,8 @@ void MainWindow::updatePeakMeters()
         const auto& dev = inputAudioDevices_[inIdx - 1];
         if (dev.type == pb::AudioDeviceType::WASAPI_Capture) {
             inputMeter_->setLevel(getWasapiPeakLevel(dev.id));
+        } else if (dev.type == pb::AudioDeviceType::ASIO) {
+            inputMeter_->setLevel(pb::AsioCapture::getInstancePeakLevel());
         } else {
             inputMeter_->setLevel(0.0f);
         }
