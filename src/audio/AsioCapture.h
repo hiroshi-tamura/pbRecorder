@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <functional>
 
 #ifdef ASIO_AVAILABLE
 #include <objbase.h>   // Defines 'interface' keyword needed by ASIO SDK on MinGW
@@ -71,6 +72,20 @@ private:
 
     void reportError(const std::string& msg);
     void releaseResources();
+
+    // Dedicated STA thread for ASIO COM operations
+    // ASIO4ALL requires STA, but main thread uses MTA for WASAPI
+    void startAsioThread();
+    void stopAsioThread();
+    void asioThreadFunc();
+    void runOnAsioThread(std::function<void()> task);
+    bool initializeOnAsioThread(const AudioDeviceInfo& device);
+
+    std::thread asioThread_;
+    HANDLE asioTaskEvent_ = nullptr;
+    HANDLE asioTaskDoneEvent_ = nullptr;
+    std::function<void()> pendingTask_;
+    std::atomic<bool> asioThreadRunning_{false};
 
     std::atomic<bool> capturing_{false};
     std::atomic<bool> initialized_{false};

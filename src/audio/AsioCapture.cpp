@@ -108,17 +108,87 @@ std::vector<AudioDeviceInfo> AsioCapture::enumerateDevices() {
 }
 
 // ============================================================================
+// STA worker thread for ASIO COM operations
+// ASIO4ALL requires STA apartment, but main thread uses MTA for WASAPI.
+// ============================================================================
+void AsioCapture::startAsioThread() {
+    if (asioThreadRunning_) return;
+    asioTaskEvent_ = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    asioTaskDoneEvent_ = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    asioThreadRunning_ = true;
+    asioThread_ = std::thread(&AsioCapture::asioThreadFunc, this);
+}
+
+void AsioCapture::stopAsioThread() {
+    if (!asioThreadRunning_) return;
+    asioThreadRunning_ = false;
+    SetEvent(asioTaskEvent_);
+    if (asioThread_.joinable()) asioThread_.join();
+    if (asioTaskEvent_) { CloseHandle(asioTaskEvent_); asioTaskEvent_ = nullptr; }
+    if (asioTaskDoneEvent_) { CloseHandle(asioTaskDoneEvent_); asioTaskDoneEvent_ = nullptr; }
+}
+
+void AsioCapture::asioThreadFunc() {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    while (asioThreadRunning_) {
+        DWORD result = MsgWaitForMultipleObjects(
+            1, &asioTaskEvent_, FALSE, 100, QS_ALLINPUT);
+
+        if (result == WAIT_OBJECT_0) {
+            if (!asioThreadRunning_) break;
+            if (pendingTask_) {
+                pendingTask_();
+                pendingTask_ = nullptr;
+            }
+            SetEvent(asioTaskDoneEvent_);
+        } else if (result == WAIT_OBJECT_0 + 1) {
+            MSG msg;
+            while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+    }
+
+    CoUninitialize();
+}
+
+void AsioCapture::runOnAsioThread(std::function<void()> task) {
+    if (!asioThreadRunning_) return;
+    pendingTask_ = std::move(task);
+    SetEvent(asioTaskEvent_);
+    // Wait for completion, but keep pumping messages in case of COM callbacks
+    while (WaitForSingleObject(asioTaskDoneEvent_, 50) == WAIT_TIMEOUT) {
+        // Keep waiting
+    }
+}
+
+// ============================================================================
 // initialize - uses AsioDrivers to load driver, then global ASIOxxx() API
+// All ASIO API calls run on dedicated STA thread.
 // ============================================================================
 bool AsioCapture::initialize(const AudioDeviceInfo& device) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     if (capturing_) return false;
     releaseResources();
 
     deviceInfo_ = device;
     isOutputCapture_ = (device.type == AudioDeviceType::ASIO_Output);
 
+    startAsioThread();
+
+    bool result = false;
+    runOnAsioThread([&]() {
+        result = initializeOnAsioThread(device);
+    });
+
+    if (result) {
+        initialized_ = true;
+    }
+    return result;
+}
+
+bool AsioCapture::initializeOnAsioThread(const AudioDeviceInfo& device) {
     // Use AsioDrivers to load the driver by name
     // Strip " (In)" / " (Out)" suffix added by enumerateDevices
     asioDrivers_ = new AsioDrivers();
@@ -139,7 +209,7 @@ bool AsioCapture::initialize(const AudioDeviceInfo& device) {
     // Initialize the ASIO driver via global API
     memset(&driverInfo_, 0, sizeof(driverInfo_));
     driverInfo_.asioVersion = 2;
-    driverInfo_.sysRef = nullptr; // avoid ASIO control panel dialogs blocking UI
+    driverInfo_.sysRef = nullptr;
 
     if (ASIOInit(&driverInfo_) != ASE_OK) {
         reportError("ASIO driver init failed: " + std::string(driverInfo_.errorMessage));
@@ -232,39 +302,41 @@ bool AsioCapture::initialize(const AudioDeviceInfo& device) {
         return false;
     }
 
-    initialized_ = true;
     return true;
 }
 
 // ============================================================================
-// start
+// start - dispatched to STA thread
 // ============================================================================
 bool AsioCapture::start() {
-    std::lock_guard<std::mutex> lock(mutex_);
     if (!initialized_ || capturing_) return false;
 
-    if (ASIOStart() != ASE_OK) {
-        reportError("ASIOStart failed");
-        return false;
-    }
+    bool result = false;
+    runOnAsioThread([&]() {
+        if (ASIOStart() == ASE_OK) {
+            result = true;
+        } else {
+            reportError("ASIOStart failed");
+        }
+    });
 
-    capturing_ = true;
-    return true;
+    if (result) capturing_ = true;
+    return result;
 }
 
 // ============================================================================
-// stop
+// stop - dispatched to STA thread
 // ============================================================================
 bool AsioCapture::stop() {
-    // Use exchange to ensure ASIOStop is called exactly once
     bool wasCapturing = capturing_.exchange(false);
     if (!wasCapturing) return true;
 
-    // ASIOStop may wait for the current callback to finish,
-    // so we must NOT hold mutex_ here (callback locks it too)
-    ASIOStop();
+    if (asioThreadRunning_) {
+        runOnAsioThread([&]() {
+            ASIOStop();
+        });
+    }
 
-    // Clear callback to prevent further deliveries
     {
         std::lock_guard<std::mutex> lock(mutex_);
         audioCallback_ = nullptr;
@@ -446,17 +518,21 @@ void AsioCapture::releaseResources() {
     }
 
     bool wasInitialized = initialized_.exchange(false);
-    if (wasInitialized) {
-        ASIODisposeBuffers();
-        // Do NOT call ASIOExit() — removeCurrentDriver() handles cleanup.
-        // Calling ASIOExit() separately causes double-free crash on ASIO4ALL.
+
+    if (asioThreadRunning_) {
+        runOnAsioThread([&]() {
+            if (wasInitialized) {
+                ASIODisposeBuffers();
+            }
+            if (asioDrivers_) {
+                asioDrivers_->removeCurrentDriver();
+                delete asioDrivers_;
+                asioDrivers_ = nullptr;
+            }
+        });
     }
 
-    if (asioDrivers_) {
-        asioDrivers_->removeCurrentDriver();
-        delete asioDrivers_;
-        asioDrivers_ = nullptr;
-    }
+    stopAsioThread();
 
     delete[] bufferInfos_;
     bufferInfos_ = nullptr;
@@ -538,6 +614,11 @@ void AsioCapture::reportError(const std::string& msg) {
 }
 
 void AsioCapture::releaseResources() {}
+void AsioCapture::startAsioThread() {}
+void AsioCapture::stopAsioThread() {}
+void AsioCapture::asioThreadFunc() {}
+void AsioCapture::runOnAsioThread(std::function<void()>) {}
+bool AsioCapture::initializeOnAsioThread(const AudioDeviceInfo&) { return false; }
 
 #endif // ASIO_AVAILABLE
 
