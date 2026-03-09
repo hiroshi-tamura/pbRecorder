@@ -24,8 +24,8 @@ AsioCapture::AsioCapture() {
 }
 
 AsioCapture::~AsioCapture() {
-    if (instance_ == this) instance_ = nullptr;
     stop();
+    if (instance_ == this) instance_ = nullptr;
     releaseResources();
 }
 
@@ -256,14 +256,13 @@ bool AsioCapture::start() {
 // stop
 // ============================================================================
 bool AsioCapture::stop() {
-    // Set flag first so callback returns immediately
-    capturing_ = false;
+    // Use exchange to ensure ASIOStop is called exactly once
+    bool wasCapturing = capturing_.exchange(false);
+    if (!wasCapturing) return true;
 
     // ASIOStop may wait for the current callback to finish,
     // so we must NOT hold mutex_ here (callback locks it too)
-    if (initialized_) {
-        ASIOStop();
-    }
+    ASIOStop();
 
     // Clear callback to prevent further deliveries
     {
@@ -326,9 +325,14 @@ ASIOTime* AsioCapture::bufferSwitchTimeInfoCallback(ASIOTime* timeInfo, long ind
 // ============================================================================
 void AsioCapture::onBufferSwitch(long index, ASIOBool /*processNow*/) {
     if (!capturing_) return;
-    if (!bufferInfos_) return;
 
+    inCallback_.store(true);
+    if (!capturing_ || !bufferInfos_) {
+        inCallback_.store(false);
+        return;
+    }
     convertAndDeliver(index);
+    inCallback_.store(false);
 }
 
 void AsioCapture::convertAndDeliver(long bufferIndex) {
@@ -432,16 +436,20 @@ void AsioCapture::convertAndDeliver(long bufferIndex) {
 // releaseResources
 // ============================================================================
 void AsioCapture::releaseResources() {
-    // Ensure stopped before releasing
-    if (capturing_) {
-        capturing_ = false;
-        ASIOStop();
+    stop();
+
+    // Wait for any in-progress callback to finish accessing buffers
+    int waitCount = 0;
+    while (inCallback_.load() && waitCount < 1000) {
+        Sleep(1);
+        ++waitCount;
     }
 
-    if (initialized_) {
+    bool wasInitialized = initialized_.exchange(false);
+    if (wasInitialized) {
         ASIODisposeBuffers();
-        ASIOExit();
-        initialized_ = false;
+        // Do NOT call ASIOExit() — removeCurrentDriver() handles cleanup.
+        // Calling ASIOExit() separately causes double-free crash on ASIO4ALL.
     }
 
     if (asioDrivers_) {

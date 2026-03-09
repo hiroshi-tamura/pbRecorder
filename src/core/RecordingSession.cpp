@@ -57,6 +57,21 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
 
     // Create audio sources
     if (config_.recordAudio) {
+        // Check if both output and input use the same ASIO driver
+        // ASIO SDK is a singleton — only one driver instance allowed at a time
+        bool outputIsAsio = config_.useOutputAudio &&
+            (config_.outputAudioDevice.type == AudioDeviceType::ASIO ||
+             config_.outputAudioDevice.type == AudioDeviceType::ASIO_Output);
+        bool inputIsAsio = config_.useInputAudio &&
+            (config_.inputAudioDevice.type == AudioDeviceType::ASIO ||
+             config_.inputAudioDevice.type == AudioDeviceType::ASIO_Output);
+
+        if (outputIsAsio && inputIsAsio) {
+            // Cannot use two ASIO instances simultaneously — prioritize output
+            onError("ASIO出力と入力を同時に使用できません。出力のみ使用します。");
+            config_.useInputAudio = false;
+        }
+
         // Output audio (system/loopback)
         if (config_.useOutputAudio && !config_.outputAudioDevice.id.empty()) {
             outputAudioSource_ = createAudioSource(config_.outputAudioDevice.type);

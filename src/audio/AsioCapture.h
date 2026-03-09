@@ -74,6 +74,7 @@ private:
 
     std::atomic<bool> capturing_{false};
     std::atomic<bool> initialized_{false};
+    std::atomic<bool> inCallback_{false};
 
     mutable std::mutex mutex_;
     AudioCallback audioCallback_;
