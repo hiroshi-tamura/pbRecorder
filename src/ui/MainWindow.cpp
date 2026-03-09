@@ -204,6 +204,12 @@ void MainWindow::setupConnections()
             this, &MainWindow::validateAudioCodec);
     connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, updateAsioInVisibility);
+    connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::validateAudioCodec);
+    connect(ui->asioStartChSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::validateAudioCodec);
+    connect(ui->asioEndChSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::validateAudioCodec);
 
     // Initially hide all ASIO channel controls
     ui->asioOutChannelLabel->setVisible(false);
@@ -384,41 +390,63 @@ void MainWindow::validateAudioCodec()
 
     auto codec = static_cast<pb::AudioCodec>(ui->audioCodecCombo->currentData().toInt());
 
-    // Get channel count from the selected output audio device
-    int channels = 2; // default
-    int outIdx = ui->outputAudioCombo->currentIndex() - 1; // -1 for "なし"
+    // Get max channel count from both output and input audio devices
+    int maxUsedChannels = 0;
+
+    // Output device channels
+    int outIdx = ui->outputAudioCombo->currentIndex() - 1;
     if (outIdx >= 0 && outIdx < static_cast<int>(outputAudioDevices_.size())) {
-        channels = outputAudioDevices_[outIdx].channelCount;
-    }
-    // If ASIO with custom channel range, calculate from spinboxes
-    if (outIdx >= 0 && outIdx < static_cast<int>(outputAudioDevices_.size())) {
+        int outCh = outputAudioDevices_[outIdx].channelCount;
         auto type = outputAudioDevices_[outIdx].type;
         if (type == pb::AudioDeviceType::ASIO || type == pb::AudioDeviceType::ASIO_Output) {
-            int start = ui->asioOutStartChSpin->value();
-            int end = ui->asioOutEndChSpin->value();
-            channels = end - start + 1;
+            outCh = ui->asioOutEndChSpin->value() - ui->asioOutStartChSpin->value() + 1;
         }
+        if (outCh > maxUsedChannels) maxUsedChannels = outCh;
     }
 
-    int maxChannels = 0;
+    // Input device channels
+    int inIdx = ui->inputAudioCombo->currentIndex() - 1;
+    if (inIdx >= 0 && inIdx < static_cast<int>(inputAudioDevices_.size())) {
+        int inCh = inputAudioDevices_[inIdx].channelCount;
+        auto type = inputAudioDevices_[inIdx].type;
+        if (type == pb::AudioDeviceType::ASIO) {
+            inCh = ui->asioEndChSpin->value() - ui->asioStartChSpin->value() + 1;
+        }
+        if (inCh > maxUsedChannels) maxUsedChannels = inCh;
+    }
+
+    if (maxUsedChannels == 0) maxUsedChannels = 2;
+
+    // Actual encoder library limits:
+    // AAC (MF): 6ch (5.1, Win10+)
+    // MP3 (MF): 2ch
+    // WMA Standard (MF): 2ch
+    // Opus (libopus opus_encoder_create): 2ch
+    // Vorbis (libvorbis): 255ch
+    // PCM: no limit
+    int maxCodecChannels = 0;
     switch (codec) {
-        case pb::AudioCodec::AAC: maxChannels = 2; break;
-        case pb::AudioCodec::MP3: maxChannels = 2; break;
-        case pb::AudioCodec::WMA: maxChannels = 2; break;
-        case pb::AudioCodec::Opus: maxChannels = 2; break;
-        case pb::AudioCodec::Vorbis: maxChannels = 8; break;
-        case pb::AudioCodec::PCM: maxChannels = 0; break; // no limit
+        case pb::AudioCodec::AAC:    maxCodecChannels = 6; break;
+        case pb::AudioCodec::MP3:    maxCodecChannels = 2; break;
+        case pb::AudioCodec::WMA:    maxCodecChannels = 2; break;
+        case pb::AudioCodec::Opus:   maxCodecChannels = 2; break;
+        case pb::AudioCodec::Vorbis: maxCodecChannels = 255; break;
+        case pb::AudioCodec::PCM:    maxCodecChannels = 0; break;
     }
 
-    bool incompatible = (maxChannels > 0 && channels > maxChannels);
+    bool incompatible = (maxCodecChannels > 0 && maxUsedChannels > maxCodecChannels);
 
     if (incompatible) {
-        ui->audioCodecCombo->setStyleSheet("QComboBox { border: 2px solid red; color: red; }");
+        ui->audioCodecCombo->setStyleSheet(
+            "QComboBox { border: 2px solid red; color: red; "
+            "background-color: #352020; padding: 2px; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { color: white; background-color: #232323; }");
         ui->audioCodecCombo->setToolTip(
             tr("%1 は最大 %2ch までです（現在 %3ch）")
                 .arg(ui->audioCodecCombo->currentText())
-                .arg(maxChannels)
-                .arg(channels));
+                .arg(maxCodecChannels)
+                .arg(maxUsedChannels));
     } else {
         ui->audioCodecCombo->setStyleSheet("");
         ui->audioCodecCombo->setToolTip("");
