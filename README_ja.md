@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/icon.png" alt="pbRecorder" width="128">
+</p>
+
 # pbRecorder
 
 [English README](README.md)

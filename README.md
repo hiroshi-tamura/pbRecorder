@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/icon.png" alt="pbRecorder" width="128">
+</p>
+
 # pbRecorder
 
 A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for high-performance capture with support for multiple codecs and container formats.
