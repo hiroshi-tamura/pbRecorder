@@ -445,8 +445,6 @@ void MainWindow::updateAudioCodecCombo()
     case pb::ContainerFormat::MP4:
         ui->audioCodecCombo->addItem("AAC",  static_cast<int>(pb::AudioCodec::AAC));
         ui->audioCodecCombo->addItem("MP3",  static_cast<int>(pb::AudioCodec::MP3));
-        ui->audioCodecCombo->addItem("Opus", static_cast<int>(pb::AudioCodec::Opus));
-        ui->audioCodecCombo->addItem("PCM",  static_cast<int>(pb::AudioCodec::PCM));
         break;
     case pb::ContainerFormat::MKV:
         ui->audioCodecCombo->addItem("AAC",    static_cast<int>(pb::AudioCodec::AAC));
@@ -565,18 +563,9 @@ void MainWindow::updateOutputExtension()
         fileName = fileName.left(dotPos);
     }
 
-    // MP4+Opus/PCM uses MkvPipeline, so extension must be .mkv
-    bool useMkvForMp4 = false;
-    if (container == pb::ContainerFormat::MP4 && ui->audioCodecCombo->count() > 0) {
-        auto codec = static_cast<pb::AudioCodec>(ui->audioCodecCombo->currentData().toInt());
-        if (codec == pb::AudioCodec::Opus || codec == pb::AudioCodec::PCM) {
-            useMkvForMp4 = true;
-        }
-    }
-
     switch (container) {
     case pb::ContainerFormat::MP4:
-        fileName += useMkvForMp4 ? ".mkv" : ".mp4";
+        fileName += ".mp4";
         break;
     case pb::ContainerFormat::MKV: fileName += ".mkv"; break;
     case pb::ContainerFormat::WMV: fileName += ".wmv"; break;
@@ -613,24 +602,12 @@ QString MainWindow::generateAutoFileName() const
     int audioBitrate = ui->audioBitrateSpinBox->value();
 
     // Extension
-    // MP4+Opus/PCM uses MkvPipeline, so extension must be .mkv
     QString ext = ".mp4";
     if (ui->containerCombo->count() > 0) {
         auto container = static_cast<pb::ContainerFormat>(
             ui->containerCombo->currentData().toInt());
-
-        bool useMkvForMp4 = false;
-        if (container == pb::ContainerFormat::MP4 && ui->audioCodecCombo->count() > 0) {
-            auto aCodec = static_cast<pb::AudioCodec>(ui->audioCodecCombo->currentData().toInt());
-            if (aCodec == pb::AudioCodec::Opus || aCodec == pb::AudioCodec::PCM) {
-                useMkvForMp4 = true;
-            }
-        }
-
         switch (container) {
-        case pb::ContainerFormat::MP4:
-            ext = useMkvForMp4 ? ".mkv" : ".mp4";
-            break;
+        case pb::ContainerFormat::MP4: ext = ".mp4"; break;
         case pb::ContainerFormat::MKV: ext = ".mkv"; break;
         case pb::ContainerFormat::WMV: ext = ".wmv"; break;
         }

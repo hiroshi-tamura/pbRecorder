@@ -400,12 +400,6 @@ std::unique_ptr<IRecordingPipeline> RecordingSession::createPipeline(ContainerFo
     switch (format) {
         case ContainerFormat::MP4:
         case ContainerFormat::WMV:
-            // Use MkvPipeline for codecs not supported by Media Foundation SinkWriter
-            if (config_.audio.codec == AudioCodec::Opus ||
-                config_.audio.codec == AudioCodec::Vorbis ||
-                config_.audio.codec == AudioCodec::PCM) {
-                return std::make_unique<MkvPipeline>();
-            }
             return std::make_unique<SinkWriterPipeline>();
         case ContainerFormat::MKV:
             return std::make_unique<MkvPipeline>();

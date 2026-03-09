@@ -344,18 +344,30 @@ QRect RegionSelectorWidget::virtualDesktopGeometry() const
 
 QRect RegionSelectorWidget::toPhysicalPixels(const QRect &logicalRect) const
 {
-    // The overlay covers the entire physical virtual desktop (via SetWindowPos).
-    // The widget uses a single consistent DPR for all coordinates.
-    // Conversion: physical = globalLogical * dpr
-    qreal dpr = devicePixelRatio_;
-    QPoint globalTL = mapToGlobal(logicalRect.topLeft());
+    // Compute the actual DPR by comparing the window's physical size
+    // (from Windows API) with the widget's logical size (from Qt).
+    // This is robust regardless of which DPR Qt assigns to the window,
+    // avoiding all Per-Monitor V2 coordinate ambiguities.
+    HWND hwnd = reinterpret_cast<HWND>(
+        const_cast<RegionSelectorWidget*>(this)->winId());
 
-    return QRect(
-        static_cast<int>(globalTL.x() * dpr),
-        static_cast<int>(globalTL.y() * dpr),
-        static_cast<int>(logicalRect.width() * dpr),
-        static_cast<int>(logicalRect.height() * dpr)
-    );
+    RECT winRect;
+    GetWindowRect(hwnd, &winRect);
+
+    int logW = width();
+    int logH = height();
+    int physW = winRect.right - winRect.left;
+    int physH = winRect.bottom - winRect.top;
+
+    qreal dprX = (logW > 0) ? static_cast<qreal>(physW) / logW : 1.0;
+    qreal dprY = (logH > 0) ? static_cast<qreal>(physH) / logH : 1.0;
+
+    int physX = winRect.left + static_cast<int>(logicalRect.x() * dprX);
+    int physY = winRect.top  + static_cast<int>(logicalRect.y() * dprY);
+    int physRW = static_cast<int>(logicalRect.width() * dprX);
+    int physRH = static_cast<int>(logicalRect.height() * dprY);
+
+    return QRect(physX, physY, physRW, physRH);
 }
 
 QRect RegionSelectorWidget::normalizedSelection() const
