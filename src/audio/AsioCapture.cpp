@@ -139,7 +139,7 @@ bool AsioCapture::initialize(const AudioDeviceInfo& device) {
     // Initialize the ASIO driver via global API
     memset(&driverInfo_, 0, sizeof(driverInfo_));
     driverInfo_.asioVersion = 2;
-    driverInfo_.sysRef = GetDesktopWindow();
+    driverInfo_.sysRef = nullptr; // avoid ASIO control panel dialogs blocking UI
 
     if (ASIOInit(&driverInfo_) != ASE_OK) {
         reportError("ASIO driver init failed: " + std::string(driverInfo_.errorMessage));
