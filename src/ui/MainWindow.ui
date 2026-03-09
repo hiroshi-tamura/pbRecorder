@@ -59,12 +59,22 @@
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="savePresetBtn">
+       <widget class="QPushButton" name="overwritePresetBtn">
         <property name="text">
          <string/>
         </property>
         <property name="toolTip">
-         <string>プリセットを保存</string>
+         <string>上書き保存</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="saveAsPresetBtn">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="toolTip">
+         <string>名前をつけて保存</string>
         </property>
        </widget>
       </item>

@@ -48,6 +48,12 @@ RegionSelectorWidget::RegionSelectorWidget(QWidget *parent)
 
 RegionSelectorWidget::~RegionSelectorWidget() = default;
 
+void RegionSelectorWidget::setInitialRegion(int physX, int physY, int physW, int physH)
+{
+    hasInitialRegion_ = true;
+    initialPhysRegion_ = QRect(physX, physY, physW, physH);
+}
+
 // ============================================================================
 // Show event
 // ============================================================================
@@ -81,6 +87,32 @@ void RegionSelectorWidget::showEvent(QShowEvent *event)
     if (autoAdjust_) {
         captureScreenImage();
         detectEdges();
+    }
+
+    // Restore previous selection if available
+    if (hasInitialRegion_) {
+        // Convert physical region to widget-local logical coordinates
+        // using the same mapping as toPhysicalPixels (inverse)
+        RECT winRect;
+        GetWindowRect(hwnd, &winRect);
+        int logW = width();
+        int logH = height();
+        int physW = winRect.right - winRect.left;
+        int physH = winRect.bottom - winRect.top;
+        qreal dprX = (logW > 0) ? static_cast<qreal>(physW) / logW : 1.0;
+        qreal dprY = (logH > 0) ? static_cast<qreal>(physH) / logH : 1.0;
+
+        int lx = static_cast<int>((initialPhysRegion_.x() - winRect.left) / dprX);
+        int ly = static_cast<int>((initialPhysRegion_.y() - winRect.top) / dprY);
+        int lw = static_cast<int>(initialPhysRegion_.width() / dprX);
+        int lh = static_cast<int>(initialPhysRegion_.height() / dprY);
+
+        startPos_ = QPoint(lx, ly);
+        currentPos_ = QPoint(lx + lw, ly + lh);
+        hasSelection_ = true;
+        selecting_ = false;
+        hasInitialRegion_ = false;
+        updateDimensionLabel();
     }
 
     activateWindow();

@@ -19,6 +19,7 @@ public:
     ~RegionSelectorWidget() override;
 
     void setAutoAdjust(bool enabled) { autoAdjust_ = enabled; }
+    void setInitialRegion(int physX, int physY, int physW, int physH);
 
 signals:
     void regionSelected(int x, int y, int width, int height);
@@ -66,5 +67,9 @@ private:
     Edge hoveredEdge_ = EdgeNone;
     Edge draggingEdge_ = EdgeNone;
     QRect adjustedSelection_;
+
+    // Initial region (physical pixels, set before show)
+    bool hasInitialRegion_ = false;
+    QRect initialPhysRegion_;
 
 };

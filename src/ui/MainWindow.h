@@ -53,7 +53,8 @@ private slots:
     void onAudioBitrateSpinBoxChanged(int value);
     void onRecordAudioToggled(bool checked);
     void onAudioCodecChanged(int index);
-    void onSavePreset();
+    void onOverwritePreset();
+    void onSaveAsPreset();
     void onDeletePreset();
     void onPresetChanged(int index);
     void onSettingsTriggered();

@@ -146,11 +146,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Preset/settings button icons using Segoe MDL2 Assets (Windows 10+)
     QFont mdl2("Segoe MDL2 Assets", 12);
-    for (auto *btn : {ui->savePresetBtn, ui->deletePresetBtn, ui->settingsBtn}) {
+    for (auto *btn : {ui->overwritePresetBtn, ui->saveAsPresetBtn, ui->deletePresetBtn, ui->settingsBtn}) {
         btn->setFont(mdl2);
         btn->setFixedSize(28, 28);
     }
-    ui->savePresetBtn->setText(QChar(0xE74E)); // save icon
+    ui->overwritePresetBtn->setText(QChar(0xE74E)); // save icon
+    ui->saveAsPresetBtn->setText(QChar(0xE710)); // + (add new) icon
     ui->deletePresetBtn->setText(QChar(0xE74D)); // delete icon
     ui->settingsBtn->setText(QChar(0xE713)); // gear icon
 
@@ -348,8 +349,10 @@ void MainWindow::setupConnections()
     // Preset controls
     connect(ui->presetCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onPresetChanged);
-    connect(ui->savePresetBtn, &QPushButton::clicked,
-            this, &MainWindow::onSavePreset);
+    connect(ui->overwritePresetBtn, &QPushButton::clicked,
+            this, &MainWindow::onOverwritePreset);
+    connect(ui->saveAsPresetBtn, &QPushButton::clicked,
+            this, &MainWindow::onSaveAsPreset);
     connect(ui->deletePresetBtn, &QPushButton::clicked,
             this, &MainWindow::onDeletePreset);
 
@@ -815,6 +818,11 @@ void MainWindow::onSelectRegion()
 {
     auto *selector = new RegionSelectorWidget();
     selector->setAutoAdjust(ui->autoAdjustCheck->isChecked());
+    if (regionSelected_) {
+        selector->setInitialRegion(
+            selectedRegion_.x, selectedRegion_.y,
+            selectedRegion_.width, selectedRegion_.height);
+    }
     connect(selector, &RegionSelectorWidget::regionSelected,
             this, [this](int x, int y, int w, int h) {
         selectedRegion_ = {x, y, w, h};
@@ -1205,10 +1213,24 @@ void MainWindow::loadPresets()
     ui->presetCombo->blockSignals(false);
 }
 
-void MainWindow::onSavePreset()
+void MainWindow::onOverwritePreset()
+{
+    int idx = ui->presetCombo->currentIndex();
+    if (idx <= 0) {
+        // (カスタム)選択中は名前をつけて保存にフォールバック
+        onSaveAsPreset();
+        return;
+    }
+
+    QString name = ui->presetCombo->currentText();
+    saveCurrentAsPreset(name);
+    statusBar()->showMessage(tr("プリセット '%1' を上書き保存しました").arg(name), 3000);
+}
+
+void MainWindow::onSaveAsPreset()
 {
     bool ok = false;
-    QString name = QInputDialog::getText(this, tr("プリセット保存"),
+    QString name = QInputDialog::getText(this, tr("名前をつけて保存"),
                                          tr("プリセット名:"), QLineEdit::Normal,
                                          QString(), &ok);
     if (!ok || name.trimmed().isEmpty()) return;
@@ -1523,7 +1545,8 @@ void MainWindow::retranslateUi()
     // Preset
     ui->presetLabel->setText(ja ? "プリセット:" : "Preset:");
     ui->presetCombo->setItemText(0, ja ? "(カスタム)" : "(Custom)");
-    ui->savePresetBtn->setToolTip(ja ? "プリセットを保存" : "Save preset");
+    ui->overwritePresetBtn->setToolTip(ja ? "上書き保存" : "Overwrite preset");
+    ui->saveAsPresetBtn->setToolTip(ja ? "名前をつけて保存" : "Save as new preset");
     ui->deletePresetBtn->setToolTip(ja ? "プリセットを削除" : "Delete preset");
     ui->settingsBtn->setToolTip(ja ? "設定" : "Settings");
 
