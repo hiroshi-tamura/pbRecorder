@@ -7,21 +7,16 @@
 #include "ui/MainWindow.h"
 
 int main(int argc, char* argv[]) {
-    // Enable Per-Monitor DPI Awareness V2
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-    // Initialize COM for MF/WASAPI
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     QApplication app(argc, argv);
     app.setApplicationName("pbRecorder");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion("0.2.0");
     app.setOrganizationName("pbRecorder");
 
-    // Use Fusion style for consistent look
     app.setStyle(QStyleFactory::create("Fusion"));
 
-    // Dark palette
     QPalette darkPalette;
     darkPalette.setColor(QPalette::Window, QColor(53, 53, 53));
     darkPalette.setColor(QPalette::WindowText, Qt::white);
@@ -46,7 +41,6 @@ int main(int argc, char* argv[]) {
         "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
     );
 
-    // Create default Output folder next to exe
     QString outputDir = QCoreApplication::applicationDirPath() + "/Output";
     QDir().mkpath(outputDir);
 
@@ -54,7 +48,6 @@ int main(int argc, char* argv[]) {
     mainWindow.show();
 
     int result = app.exec();
-
     CoUninitialize();
     return result;
 }

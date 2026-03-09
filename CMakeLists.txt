@@ -166,17 +166,32 @@ set(UI_SOURCES
     src/ui/RegionSelectorWidget.cpp
 )
 
+set(CLI_SOURCES
+    src/cli/CliRunner.cpp
+)
+
 set(UI_FILES
     src/ui/MainWindow.ui
 )
 
-set(ALL_SOURCES
-    src/main.cpp
+set(SHARED_SOURCES
     ${CORE_SOURCES}
     ${CAPTURE_SOURCES}
     ${AUDIO_SOURCES}
     ${PIPELINE_SOURCES}
+)
+
+set(ALL_SOURCES
+    src/main.cpp
+    ${SHARED_SOURCES}
     ${UI_SOURCES}
+    ${CLI_SOURCES}
+)
+
+set(CLI_ALL_SOURCES
+    src/cli/cli_main.cpp
+    ${SHARED_SOURCES}
+    ${CLI_SOURCES}
 )
 
 # ASIO sources
@@ -198,6 +213,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src/audio
     ${CMAKE_SOURCE_DIR}/src/pipeline
     ${CMAKE_SOURCE_DIR}/src/ui
+    ${CMAKE_SOURCE_DIR}/src/cli
 )
 
 if(ASIO_AVAILABLE)
@@ -232,8 +248,49 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     opus
 )
 
+# CLI executable (CONSOLE subsystem)
+add_executable(pbRecorder-cli ${CLI_ALL_SOURCES})
+
+target_include_directories(pbRecorder-cli PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/core
+    ${CMAKE_SOURCE_DIR}/src/capture
+    ${CMAKE_SOURCE_DIR}/src/audio
+    ${CMAKE_SOURCE_DIR}/src/pipeline
+    ${CMAKE_SOURCE_DIR}/src/cli
+)
+
+if(ASIO_AVAILABLE)
+    target_include_directories(pbRecorder-cli PRIVATE
+        ${ASIO_SDK_DIR}/common
+        ${ASIO_SDK_DIR}/host
+        ${ASIO_SDK_DIR}/host/pc
+    )
+    target_compile_definitions(pbRecorder-cli PRIVATE ASIO_AVAILABLE=1)
+endif()
+
+target_compile_definitions(pbRecorder-cli PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _WIN32_WINNT=0x0A00
+    NTDDI_VERSION=0x0A000000
+)
+
+target_link_libraries(pbRecorder-cli PRIVATE
+    Qt6::Core
+    ${WIN_LIBS}
+    ebml
+    matroska
+    Ogg::ogg
+    vorbis
+    vorbisenc
+    opus
+)
+
 # Copy Qt DLLs on install
-install(TARGETS ${PROJECT_NAME} DESTINATION bin)
+install(TARGETS ${PROJECT_NAME} pbRecorder-cli DESTINATION bin)
 qt_generate_deploy_app_script(
     TARGET ${PROJECT_NAME}
     OUTPUT_SCRIPT deploy_script
