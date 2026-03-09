@@ -35,6 +35,9 @@ private:
     static BOOL CALLBACK monitorEnumProc(HMONITOR hMonitor, HDC hdc,
                                           LPRECT lpRect, LPARAM lParam);
 
+    /// Match each monitor to its DXGI EnumOutputs index.
+    void matchDxgiOutputIndices();
+
     std::vector<MonitorInfo> monitors_;
 };
 

@@ -1050,7 +1050,8 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
 
     if (modeIdx == 0 && ui->monitorCombo->currentIndex() >= 0
         && ui->monitorCombo->currentIndex() < static_cast<int>(monitors_.size())) {
-        config.capture.monitorIndex = ui->monitorCombo->currentIndex();
+        // Use DXGI output index (not display sort order) for DxgiScreenCapture
+        config.capture.monitorIndex = monitors_[ui->monitorCombo->currentIndex()].dxgiOutputIndex;
     }
 
     if (modeIdx == 1 && ui->windowCombo->currentIndex() >= 0

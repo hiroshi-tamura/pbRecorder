@@ -1,24 +1,10 @@
 #include "capture/RegionCapture.h"
 
 #include <windows.h>
+#include <dxgi.h>
 #include <algorithm>
-#include <vector>
 
 namespace pb {
-
-// Helper struct for monitor enumeration
-struct MonitorEnumData {
-    std::vector<RECT> monitorRects;
-    std::vector<HMONITOR> monitorHandles;
-};
-
-static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC /*hdc*/,
-                                      LPRECT lprcMonitor, LPARAM dwData) {
-    auto* data = reinterpret_cast<MonitorEnumData*>(dwData);
-    data->monitorRects.push_back(*lprcMonitor);
-    data->monitorHandles.push_back(hMonitor);
-    return TRUE;
-}
 
 RegionCapture::RegionCapture() = default;
 
@@ -45,7 +31,7 @@ bool RegionCapture::initialize(const CaptureConfig& config, ID3D11Device* device
     width_ = static_cast<uint32_t>(region_.width) & ~1u;
     height_ = static_cast<uint32_t>(region_.height) & ~1u;
 
-    // Find the best monitor for this region
+    // Find the best DXGI output for this region
     int monitorIdx = findBestMonitor(region_);
 
     // Create inner DxgiScreenCapture for the selected monitor
@@ -54,7 +40,6 @@ bool RegionCapture::initialize(const CaptureConfig& config, ID3D11Device* device
     CaptureConfig screenConfig = config;
     screenConfig.mode = CaptureMode::Screen;
     screenConfig.monitorIndex = monitorIdx;
-    // Cursor compositing is handled at the full-screen level, so pass through the setting
     screenConfig.captureCursor = config.captureCursor;
 
     if (!screenCapture_->initialize(screenConfig, device)) {
@@ -65,14 +50,20 @@ bool RegionCapture::initialize(const CaptureConfig& config, ID3D11Device* device
     screenWidth_ = screenCapture_->getWidth();
     screenHeight_ = screenCapture_->getHeight();
 
-    // Calculate offset of the region within the selected monitor
-    MonitorEnumData enumData;
-    EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, reinterpret_cast<LPARAM>(&enumData));
+    // Calculate offset of the region within the selected DXGI output
+    // Use DXGI DesktopCoordinates (same source as EnumOutputs index)
+    ComPtr<IDXGIDevice> dxgiDevice;
+    device_->QueryInterface(__uuidof(IDXGIDevice),
+                            reinterpret_cast<void**>(dxgiDevice.GetAddressOf()));
+    ComPtr<IDXGIAdapter> adapter;
+    dxgiDevice->GetAdapter(&adapter);
 
-    if (monitorIdx >= 0 && monitorIdx < static_cast<int>(enumData.monitorRects.size())) {
-        const RECT& monRect = enumData.monitorRects[monitorIdx];
-        offsetX_ = region_.x - monRect.left;
-        offsetY_ = region_.y - monRect.top;
+    ComPtr<IDXGIOutput> dxgiOutput;
+    if (SUCCEEDED(adapter->EnumOutputs(monitorIdx, &dxgiOutput))) {
+        DXGI_OUTPUT_DESC desc;
+        dxgiOutput->GetDesc(&desc);
+        offsetX_ = region_.x - desc.DesktopCoordinates.left;
+        offsetY_ = region_.y - desc.DesktopCoordinates.top;
     } else {
         offsetX_ = region_.x;
         offsetY_ = region_.y;
@@ -136,10 +127,16 @@ uint32_t RegionCapture::getHeight() const { return height_; }
 bool RegionCapture::isCapturing() const { return capturing_.load(); }
 
 int RegionCapture::findBestMonitor(const RegionRect& region) const {
-    MonitorEnumData enumData;
-    EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, reinterpret_cast<LPARAM>(&enumData));
+    // Use DXGI EnumOutputs (not EnumDisplayMonitors) to ensure the returned
+    // index matches adapter->EnumOutputs() ordering used by DxgiScreenCapture.
+    ComPtr<IDXGIDevice> dxgiDevice;
+    HRESULT hr = device_->QueryInterface(__uuidof(IDXGIDevice),
+                                          reinterpret_cast<void**>(dxgiDevice.GetAddressOf()));
+    if (FAILED(hr)) return 0;
 
-    if (enumData.monitorRects.empty()) return 0;
+    ComPtr<IDXGIAdapter> adapter;
+    hr = dxgiDevice->GetAdapter(&adapter);
+    if (FAILED(hr)) return 0;
 
     RECT regionRect;
     regionRect.left = region.x;
@@ -150,13 +147,15 @@ int RegionCapture::findBestMonitor(const RegionRect& region) const {
     int bestIdx = 0;
     int64_t bestArea = 0;
 
-    for (size_t i = 0; i < enumData.monitorRects.size(); ++i) {
-        const RECT& mr = enumData.monitorRects[i];
+    ComPtr<IDXGIOutput> output;
+    for (UINT i = 0; adapter->EnumOutputs(i, &output) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_OUTPUT_DESC desc;
+        output->GetDesc(&desc);
+        const RECT& mr = desc.DesktopCoordinates;
 
-        // Calculate intersection area
-        int left = std::max(static_cast<int>(regionRect.left), static_cast<int>(mr.left));
-        int top = std::max(static_cast<int>(regionRect.top), static_cast<int>(mr.top));
-        int right = std::min(static_cast<int>(regionRect.right), static_cast<int>(mr.right));
+        int left   = std::max(static_cast<int>(regionRect.left),   static_cast<int>(mr.left));
+        int top    = std::max(static_cast<int>(regionRect.top),    static_cast<int>(mr.top));
+        int right  = std::min(static_cast<int>(regionRect.right),  static_cast<int>(mr.right));
         int bottom = std::min(static_cast<int>(regionRect.bottom), static_cast<int>(mr.bottom));
 
         if (right > left && bottom > top) {
@@ -166,6 +165,8 @@ int RegionCapture::findBestMonitor(const RegionRect& region) const {
                 bestIdx = static_cast<int>(i);
             }
         }
+
+        output.Reset();
     }
 
     return bestIdx;

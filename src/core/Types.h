@@ -64,6 +64,7 @@ struct MonitorInfo {
     float dpiScaleX, dpiScaleY;
     HMONITOR hMonitor;
     int index;
+    int dxgiOutputIndex = -1;  // DXGI adapter->EnumOutputs() index
 };
 
 struct WindowInfo {

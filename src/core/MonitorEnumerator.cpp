@@ -2,6 +2,9 @@
 
 #include <windows.h>
 #include <shellscalingapi.h>
+#include <dxgi.h>
+#include <d3d11.h>
+#include <wrl/client.h>
 #include <algorithm>
 #include <stdexcept>
 
@@ -116,6 +119,11 @@ std::vector<MonitorInfo> MonitorEnumerator::enumerate() {
     EnumDisplayMonitors(nullptr, nullptr, monitorEnumProc,
                         reinterpret_cast<LPARAM>(&monitors_));
 
+    // Match each monitor to its DXGI EnumOutputs index by comparing
+    // desktop coordinates. DXGI output index is what DxgiScreenCapture
+    // needs for DuplicateOutput.
+    matchDxgiOutputIndices();
+
     // Sort by position: primary first, then left-to-right.
     std::sort(monitors_.begin(), monitors_.end(),
         [](const MonitorInfo& a, const MonitorInfo& b) {
@@ -128,7 +136,7 @@ std::vector<MonitorInfo> MonitorEnumerator::enumerate() {
             return a.y < b.y;
         });
 
-    // Reassign indices after sorting.
+    // Reassign display indices after sorting (dxgiOutputIndex is preserved).
     for (int i = 0; i < static_cast<int>(monitors_.size()); ++i) {
         monitors_[i].index = i;
     }
@@ -173,6 +181,50 @@ int MonitorEnumerator::getMonitorCount() {
         enumerate();
     }
     return static_cast<int>(monitors_.size());
+}
+
+void MonitorEnumerator::matchDxgiOutputIndices() {
+    // Create a temporary D3D11 device to enumerate DXGI outputs
+    using Microsoft::WRL::ComPtr;
+
+    ComPtr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                     reinterpret_cast<void**>(factory.GetAddressOf()));
+    if (FAILED(hr)) return;
+
+    ComPtr<IDXGIAdapter> adapter;
+    hr = factory->EnumAdapters(0, &adapter);
+    if (FAILED(hr)) return;
+
+    // Enumerate DXGI outputs and match to monitors by desktop coordinates
+    ComPtr<IDXGIOutput> output;
+    for (UINT i = 0; adapter->EnumOutputs(i, &output) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_OUTPUT_DESC desc;
+        output->GetDesc(&desc);
+
+        int ox = desc.DesktopCoordinates.left;
+        int oy = desc.DesktopCoordinates.top;
+        int ow = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+        int oh = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+
+        // Find the monitor whose physical rect matches this DXGI output
+        for (auto& mon : monitors_) {
+            if (mon.dxgiOutputIndex >= 0) continue; // already matched
+            if (mon.x == ox && mon.y == oy && mon.width == ow && mon.height == oh) {
+                mon.dxgiOutputIndex = static_cast<int>(i);
+                break;
+            }
+        }
+
+        output.Reset();
+    }
+
+    // Fallback: any unmatched monitor gets its list position as DXGI index
+    for (int i = 0; i < static_cast<int>(monitors_.size()); ++i) {
+        if (monitors_[i].dxgiOutputIndex < 0) {
+            monitors_[i].dxgiOutputIndex = i;
+        }
+    }
 }
 
 } // namespace pb
