@@ -69,6 +69,11 @@ private:
 
     ErrorCallback errorCallback_;
     ID3D11Device* device_ = nullptr;
+
+    // Audio resampling (when ASIO sample rate differs from pipeline target)
+    AudioBuffer resampleBuffer(const AudioBuffer& input, uint32_t targetRate);
+    uint32_t sourceSampleRate_ = 0;
+    bool needsResample_ = false;
 };
 
 } // namespace pb

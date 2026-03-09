@@ -99,12 +99,29 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
             config_.recordAudio = false;
         } else {
             // Use actual audio source parameters for pipeline configuration
-            // to ensure format matches between capture and encoder
             IAudioSource* primaryAudio = outputAudioSource_ ? outputAudioSource_.get()
                                                              : inputAudioSource_.get();
-            config_.audio.sampleRate = primaryAudio->getSampleRate();
+            sourceSampleRate_ = primaryAudio->getSampleRate();
             config_.audio.channelCount = primaryAudio->getChannelCount();
             config_.audio.bitsPerSample = primaryAudio->getBitsPerSample();
+
+            // Determine target sample rate for the encoder
+            // Opus only supports 8000/12000/16000/24000/48000
+            // AAC supports 44100/48000 etc, Vorbis is flexible
+            uint32_t targetRate = 48000;
+            bool isOpus = (config_.container == ContainerFormat::MKV &&
+                           config_.audio.codec == AudioCodec::Opus);
+            if (!isOpus && (sourceSampleRate_ == 44100 || sourceSampleRate_ == 22050)) {
+                targetRate = 44100; // AAC/Vorbis support 44100; keep it
+            }
+            config_.audio.sampleRate = targetRate;
+            needsResample_ = (sourceSampleRate_ != targetRate);
+
+            if (needsResample_) {
+                onError("オーディオリサンプリング: " +
+                        std::to_string(sourceSampleRate_) + " Hz → " +
+                        std::to_string(targetRate) + " Hz");
+            }
         }
     }
 
@@ -332,6 +349,9 @@ void RecordingSession::audioWriterThread() {
     while (recording_.load()) {
         AudioBuffer buffer;
         if (audioQueue_.tryPop(buffer, std::chrono::milliseconds(50))) {
+            if (needsResample_) {
+                buffer = resampleBuffer(buffer, config_.audio.sampleRate);
+            }
             if (!pipeline_->writeAudioSamples(buffer)) {
                 onError("Failed to write audio samples");
                 break;
@@ -342,6 +362,9 @@ void RecordingSession::audioWriterThread() {
     // Drain remaining buffers
     AudioBuffer buffer;
     while (audioQueue_.tryPop(buffer, std::chrono::milliseconds(1))) {
+        if (needsResample_) {
+            buffer = resampleBuffer(buffer, config_.audio.sampleRate);
+        }
         pipeline_->writeAudioSamples(buffer);
     }
 }
@@ -384,6 +407,66 @@ std::unique_ptr<IRecordingPipeline> RecordingSession::createPipeline(ContainerFo
         default:
             return nullptr;
     }
+}
+
+AudioBuffer RecordingSession::resampleBuffer(const AudioBuffer& input, uint32_t targetRate) {
+    uint32_t srcRate = input.sampleRate;
+    if (srcRate == targetRate || srcRate == 0) return input;
+
+    double ratio = static_cast<double>(targetRate) / srcRate;
+    uint32_t srcFrames = input.sampleCount;
+    uint32_t dstFrames = static_cast<uint32_t>(srcFrames * ratio);
+    uint32_t channels = input.channelCount;
+
+    AudioBuffer output;
+    output.timestamp = input.timestamp;
+    output.channelCount = channels;
+    output.sampleRate = targetRate;
+    output.bitsPerSample = input.bitsPerSample;
+    output.sampleCount = dstFrames;
+
+    if (input.bitsPerSample == 16) {
+        output.data.resize(dstFrames * channels * 2);
+        const int16_t* src = reinterpret_cast<const int16_t*>(input.data.data());
+        int16_t* dst = reinterpret_cast<int16_t*>(output.data.data());
+
+        for (uint32_t i = 0; i < dstFrames; ++i) {
+            double srcPos = i / ratio;
+            uint32_t idx = static_cast<uint32_t>(srcPos);
+            double frac = srcPos - idx;
+
+            for (uint32_t ch = 0; ch < channels; ++ch) {
+                int16_t s0 = src[idx * channels + ch];
+                int16_t s1 = (idx + 1 < srcFrames)
+                    ? src[(idx + 1) * channels + ch] : s0;
+                dst[i * channels + ch] = static_cast<int16_t>(
+                    s0 + frac * (s1 - s0));
+            }
+        }
+    } else if (input.bitsPerSample == 32) {
+        output.data.resize(dstFrames * channels * 4);
+        const int32_t* src = reinterpret_cast<const int32_t*>(input.data.data());
+        int32_t* dst = reinterpret_cast<int32_t*>(output.data.data());
+
+        for (uint32_t i = 0; i < dstFrames; ++i) {
+            double srcPos = i / ratio;
+            uint32_t idx = static_cast<uint32_t>(srcPos);
+            double frac = srcPos - idx;
+
+            for (uint32_t ch = 0; ch < channels; ++ch) {
+                int32_t s0 = src[idx * channels + ch];
+                int32_t s1 = (idx + 1 < srcFrames)
+                    ? src[(idx + 1) * channels + ch] : s0;
+                dst[i * channels + ch] = static_cast<int32_t>(
+                    s0 + frac * (s1 - s0));
+            }
+        }
+    } else {
+        // Unsupported bit depth — pass through unchanged
+        return input;
+    }
+
+    return output;
 }
 
 } // namespace pb
