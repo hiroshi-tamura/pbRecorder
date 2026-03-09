@@ -269,15 +269,10 @@ bool AsioCapture::initializeOnAsioThread(const AudioDeviceInfo& device) {
     }
     sampleType_ = channelInfos_[0].type;
 
-    // Determine bits per sample from ASIO sample type
-    switch (sampleType_) {
-        case ASIOSTInt16LSB: bitsPerSample_ = 16; break;
-        case ASIOSTInt24LSB: bitsPerSample_ = 24; break;
-        case ASIOSTInt32LSB: bitsPerSample_ = 32; break;
-        case ASIOSTFloat32LSB: bitsPerSample_ = 32; break;
-        case ASIOSTFloat64LSB: bitsPerSample_ = 64; break;
-        default: bitsPerSample_ = 32; break;
-    }
+    // Note: sampleType_ is used by convertAndDeliver() to convert from native format.
+    // convertAndDeliver() always outputs 16-bit interleaved PCM
+    // regardless of the ASIO native format, so report 16.
+    bitsPerSample_ = 16;
 
     // Allocate buffer infos for the channels we're capturing
     bufferInfos_ = new ASIOBufferInfo[totalChannels];

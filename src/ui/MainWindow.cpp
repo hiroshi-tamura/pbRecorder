@@ -196,6 +196,12 @@ void MainWindow::setupConnections()
     };
     connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, updateAsioOutVisibility);
+    connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::validateAudioCodec);
+    connect(ui->asioOutStartChSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::validateAudioCodec);
+    connect(ui->asioOutEndChSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::validateAudioCodec);
     connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, updateAsioInVisibility);
 
@@ -210,6 +216,8 @@ void MainWindow::setupConnections()
     // Audio codec-specific settings visibility
     connect(ui->audioCodecCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onAudioCodecChanged);
+    connect(ui->audioCodecCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::validateAudioCodec);
 
     // Default sample rate to 48000 Hz
     ui->audioSampleRateCombo->setCurrentIndex(1);
@@ -351,6 +359,8 @@ void MainWindow::updateAudioCodecCombo()
     case pb::ContainerFormat::MP4:
         ui->audioCodecCombo->addItem("AAC",  static_cast<int>(pb::AudioCodec::AAC));
         ui->audioCodecCombo->addItem("MP3",  static_cast<int>(pb::AudioCodec::MP3));
+        ui->audioCodecCombo->addItem("Opus", static_cast<int>(pb::AudioCodec::Opus));
+        ui->audioCodecCombo->addItem("PCM",  static_cast<int>(pb::AudioCodec::PCM));
         break;
     case pb::ContainerFormat::MKV:
         ui->audioCodecCombo->addItem("AAC",    static_cast<int>(pb::AudioCodec::AAC));
@@ -365,6 +375,54 @@ void MainWindow::updateAudioCodecCombo()
 
     ui->audioCodecCombo->blockSignals(false);
     updateAudioCodecWidgets();
+    validateAudioCodec();
+}
+
+void MainWindow::validateAudioCodec()
+{
+    if (ui->audioCodecCombo->count() == 0) return;
+
+    auto codec = static_cast<pb::AudioCodec>(ui->audioCodecCombo->currentData().toInt());
+
+    // Get channel count from the selected output audio device
+    int channels = 2; // default
+    int outIdx = ui->outputAudioCombo->currentIndex() - 1; // -1 for "なし"
+    if (outIdx >= 0 && outIdx < static_cast<int>(outputAudioDevices_.size())) {
+        channels = outputAudioDevices_[outIdx].channelCount;
+    }
+    // If ASIO with custom channel range, calculate from spinboxes
+    if (outIdx >= 0 && outIdx < static_cast<int>(outputAudioDevices_.size())) {
+        auto type = outputAudioDevices_[outIdx].type;
+        if (type == pb::AudioDeviceType::ASIO || type == pb::AudioDeviceType::ASIO_Output) {
+            int start = ui->asioOutStartChSpin->value();
+            int end = ui->asioOutEndChSpin->value();
+            channels = end - start + 1;
+        }
+    }
+
+    int maxChannels = 0;
+    switch (codec) {
+        case pb::AudioCodec::AAC: maxChannels = 2; break;
+        case pb::AudioCodec::MP3: maxChannels = 2; break;
+        case pb::AudioCodec::WMA: maxChannels = 2; break;
+        case pb::AudioCodec::Opus: maxChannels = 2; break;
+        case pb::AudioCodec::Vorbis: maxChannels = 8; break;
+        case pb::AudioCodec::PCM: maxChannels = 0; break; // no limit
+    }
+
+    bool incompatible = (maxChannels > 0 && channels > maxChannels);
+
+    if (incompatible) {
+        ui->audioCodecCombo->setStyleSheet("QComboBox { border: 2px solid red; color: red; }");
+        ui->audioCodecCombo->setToolTip(
+            tr("%1 は最大 %2ch までです（現在 %3ch）")
+                .arg(ui->audioCodecCombo->currentText())
+                .arg(maxChannels)
+                .arg(channels));
+    } else {
+        ui->audioCodecCombo->setStyleSheet("");
+        ui->audioCodecCombo->setToolTip("");
+    }
 }
 
 void MainWindow::updateOutputExtension()
@@ -388,8 +446,19 @@ void MainWindow::updateOutputExtension()
         fileName = fileName.left(dotPos);
     }
 
+    // MP4+Opus/PCM uses MkvPipeline, so extension must be .mkv
+    bool useMkvForMp4 = false;
+    if (container == pb::ContainerFormat::MP4 && ui->audioCodecCombo->count() > 0) {
+        auto codec = static_cast<pb::AudioCodec>(ui->audioCodecCombo->currentData().toInt());
+        if (codec == pb::AudioCodec::Opus || codec == pb::AudioCodec::PCM) {
+            useMkvForMp4 = true;
+        }
+    }
+
     switch (container) {
-    case pb::ContainerFormat::MP4: fileName += ".mp4"; break;
+    case pb::ContainerFormat::MP4:
+        fileName += useMkvForMp4 ? ".mkv" : ".mp4";
+        break;
     case pb::ContainerFormat::MKV: fileName += ".mkv"; break;
     case pb::ContainerFormat::WMV: fileName += ".wmv"; break;
     }
@@ -425,12 +494,24 @@ QString MainWindow::generateAutoFileName() const
     int audioBitrate = ui->audioBitrateSpinBox->value();
 
     // Extension
+    // MP4+Opus/PCM uses MkvPipeline, so extension must be .mkv
     QString ext = ".mp4";
     if (ui->containerCombo->count() > 0) {
         auto container = static_cast<pb::ContainerFormat>(
             ui->containerCombo->currentData().toInt());
+
+        bool useMkvForMp4 = false;
+        if (container == pb::ContainerFormat::MP4 && ui->audioCodecCombo->count() > 0) {
+            auto aCodec = static_cast<pb::AudioCodec>(ui->audioCodecCombo->currentData().toInt());
+            if (aCodec == pb::AudioCodec::Opus || aCodec == pb::AudioCodec::PCM) {
+                useMkvForMp4 = true;
+            }
+        }
+
         switch (container) {
-        case pb::ContainerFormat::MP4: ext = ".mp4"; break;
+        case pb::ContainerFormat::MP4:
+            ext = useMkvForMp4 ? ".mkv" : ".mp4";
+            break;
         case pb::ContainerFormat::MKV: ext = ".mkv"; break;
         case pb::ContainerFormat::WMV: ext = ".wmv"; break;
         }
@@ -497,6 +578,7 @@ void MainWindow::onRecordAudioToggled(bool /*checked*/)
 void MainWindow::onAudioCodecChanged(int /*index*/)
 {
     updateAudioCodecWidgets();
+    updateOutputExtension();
 }
 
 void MainWindow::updateAudioCodecWidgets()

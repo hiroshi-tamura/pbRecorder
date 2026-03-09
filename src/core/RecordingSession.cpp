@@ -109,8 +109,7 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
             // Opus only supports 8000/12000/16000/24000/48000
             // AAC supports 44100/48000 etc, Vorbis is flexible
             uint32_t targetRate = 48000;
-            bool isOpus = (config_.container == ContainerFormat::MKV &&
-                           config_.audio.codec == AudioCodec::Opus);
+            bool isOpus = (config_.audio.codec == AudioCodec::Opus);
             if (!isOpus && (sourceSampleRate_ == 44100 || sourceSampleRate_ == 22050)) {
                 targetRate = 44100; // AAC/Vorbis support 44100; keep it
             }
@@ -401,6 +400,12 @@ std::unique_ptr<IRecordingPipeline> RecordingSession::createPipeline(ContainerFo
     switch (format) {
         case ContainerFormat::MP4:
         case ContainerFormat::WMV:
+            // Use MkvPipeline for codecs not supported by Media Foundation SinkWriter
+            if (config_.audio.codec == AudioCodec::Opus ||
+                config_.audio.codec == AudioCodec::Vorbis ||
+                config_.audio.codec == AudioCodec::PCM) {
+                return std::make_unique<MkvPipeline>();
+            }
             return std::make_unique<SinkWriterPipeline>();
         case ContainerFormat::MKV:
             return std::make_unique<MkvPipeline>();

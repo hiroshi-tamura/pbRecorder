@@ -65,6 +65,7 @@ private:
     void populateAudioDevices();
     void updateContainerCombo();
     void updateAudioCodecCombo();
+    void validateAudioCodec();
     void updateCaptureWidgetVisibility(int mode);
     void updateOutputExtension();
     void updateAutoFileName();
