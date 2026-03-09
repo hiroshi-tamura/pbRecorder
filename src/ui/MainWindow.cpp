@@ -417,11 +417,11 @@ void MainWindow::validateAudioCodec()
 
     if (maxUsedChannels == 0) maxUsedChannels = 2;
 
-    // Actual encoder library limits:
-    // AAC (MF): 6ch (5.1, Win10+)
-    // MP3 (MF): 2ch
-    // WMA Standard (MF): 2ch
-    // Opus (libopus opus_encoder_create): 2ch
+    // Encoder library limits (not AAC spec limits — MF encoder limits):
+    // AAC (Media Foundation): 6ch max (1/2/6 only, Win10+). Spec allows 48ch.
+    // MP3 (Media Foundation): 2ch
+    // WMA Standard (Media Foundation): 2ch
+    // Opus (libopus opus_encoder_create): 2ch. Multistream API allows 255ch.
     // Vorbis (libvorbis): 255ch
     // PCM: no limit
     int maxCodecChannels = 0;
@@ -450,6 +450,17 @@ void MainWindow::validateAudioCodec()
     } else {
         ui->audioCodecCombo->setStyleSheet("");
         ui->audioCodecCombo->setToolTip("");
+    }
+
+    // Disable Record button when codec is incompatible
+    if (!isRecording_) {
+        ui->recordBtn->setEnabled(!incompatible);
+        if (incompatible) {
+            statusBar()->showMessage(
+                tr("録音不可: %1 は %2ch に対応していません")
+                    .arg(ui->audioCodecCombo->currentText())
+                    .arg(maxUsedChannels));
+        }
     }
 }
 
