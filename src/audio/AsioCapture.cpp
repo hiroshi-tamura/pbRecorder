@@ -24,9 +24,9 @@ AsioCapture::AsioCapture() {
 }
 
 AsioCapture::~AsioCapture() {
+    if (instance_ == this) instance_ = nullptr;
     stop();
     releaseResources();
-    if (instance_ == this) instance_ = nullptr;
 }
 
 // ============================================================================
@@ -256,11 +256,20 @@ bool AsioCapture::start() {
 // stop
 // ============================================================================
 bool AsioCapture::stop() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!capturing_) return true;
-
-    ASIOStop();
+    // Set flag first so callback returns immediately
     capturing_ = false;
+
+    // ASIOStop may wait for the current callback to finish,
+    // so we must NOT hold mutex_ here (callback locks it too)
+    if (initialized_) {
+        ASIOStop();
+    }
+
+    // Clear callback to prevent further deliveries
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        audioCallback_ = nullptr;
+    }
     return true;
 }
 
@@ -316,7 +325,8 @@ ASIOTime* AsioCapture::bufferSwitchTimeInfoCallback(ASIOTime* timeInfo, long ind
 // onBufferSwitch - convert ASIO non-interleaved to interleaved PCM
 // ============================================================================
 void AsioCapture::onBufferSwitch(long index, ASIOBool /*processNow*/) {
-    if (!capturing_ || !bufferInfos_) return;
+    if (!capturing_) return;
+    if (!bufferInfos_) return;
 
     convertAndDeliver(index);
 }
@@ -422,9 +432,16 @@ void AsioCapture::convertAndDeliver(long bufferIndex) {
 // releaseResources
 // ============================================================================
 void AsioCapture::releaseResources() {
+    // Ensure stopped before releasing
+    if (capturing_) {
+        capturing_ = false;
+        ASIOStop();
+    }
+
     if (initialized_) {
         ASIODisposeBuffers();
         ASIOExit();
+        initialized_ = false;
     }
 
     if (asioDrivers_) {
@@ -437,8 +454,6 @@ void AsioCapture::releaseResources() {
     bufferInfos_ = nullptr;
     delete[] channelInfos_;
     channelInfos_ = nullptr;
-
-    initialized_ = false;
 }
 
 // ============================================================================
