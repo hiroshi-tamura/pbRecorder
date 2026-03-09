@@ -6,21 +6,22 @@
 
 [English README](README.md)
 
-Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Duplicationを使用した高速なキャプチャと、複数のコーデック・コンテナ形式をサポートしています。
+Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Duplicationを使用した高速なキャプチャと、複数のコーデック・コンテナ形式をサポートしています。GUIとCLIの両方に対応。
 
 ## 主な機能
 
 ### キャプチャモード
-- **画面全体** - ディスプレイ全体を録画（マルチモニター対応）
-- **ウィンドウ指定** - 特定のウィンドウだけを録画
-- **範囲指定** - 画面の任意の矩形領域を録画
-  - **オートアジャスト機能** - ウィンドウの境界線を自動検出し、選択範囲をスナップ
+- **画面全体** — ディスプレイ全体を録画（マルチモニター対応）
+- **ウィンドウ指定** — 特定のウィンドウだけを録画
+- **範囲指定** — 画面の任意の矩形領域を録画
+  - **オートアジャスト機能** — ウィンドウの境界線を自動検出し、選択範囲をスナップ
   - 選択後もエッジをドラッグして微調整可能
 
 ### 映像
 - **コーデック**: H.264, WMV
 - **ハードウェアエンコード**: Media Foundation経由のGPUエンコード対応
-- **フレームレート**: 最大60fps
+- **H.264オプション**: プロファイル (Baseline/Main/High), レベル (Auto/4.0〜5.1)
+- **フレームレート**: 最大240fps
 - **ビットレート**: 任意に設定可能（デフォルト8Mbps）
 - **マウスカーソル**: 表示/非表示切り替え可能
 
@@ -30,9 +31,15 @@ Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Dup
 - **コーデック**: AAC, MP3, Opus, Vorbis, PCM, WMA
 
 ### コンテナ形式
-- **MP4** (.mp4) - H.264 + AAC/MP3
-- **MKV** (.mkv) - H.264 + Opus/Vorbis/PCM（libmatroskaによるネイティブ実装）
-- **WMV** (.wmv) - WMV + WMA
+- **MP4** (.mp4) — H.264 + AAC/MP3
+- **MKV** (.mkv) — H.264 + Opus/Vorbis/PCM（libmatroskaによるネイティブ実装）
+- **WMV** (.wmv) — WMV + WMA
+
+### その他
+- **プリセット機能** — 録画設定の保存・読み込み
+- **言語切り替え** — 英語 / 日本語 UI
+- **ポータブル** — 設定はexe横のJSONファイルに保存（レジストリ不使用）
+- **CLI対応** — フル機能のコマンドラインインターフェース (`pbRecorder-cli.exe`)
 
 ## 動作環境
 
@@ -44,7 +51,91 @@ Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Dup
 
 1. [Releases](https://github.com/hiroshi-tamura/pbRecorder/releases)からZIPをダウンロード
 2. 任意のフォルダに展開
-3. `pbRecorder.exe` を実行
+3. `pbRecorder.exe`（GUI）または `pbRecorder-cli.exe`（CLI）を実行
+
+## GUI の使い方
+
+1. キャプチャソースを選択（画面全体/ウィンドウ/範囲指定）
+2. 必要に応じて音声デバイスを選択
+3. コンテナ形式・コーデックを設定
+4. 出力先フォルダとファイル名を設定
+5. 録画ボタン（または `Ctrl+R`）で録画開始/停止
+
+### ショートカットキー
+- `Ctrl+R` — 録画開始/停止
+- 範囲選択時: `Enter` で確定、`Esc` でキャンセル
+
+## CLI の使い方
+
+`pbRecorder-cli.exe` はコマンドラインから全録画機能を利用できます。
+
+### デバイス一覧
+
+```bash
+pbRecorder-cli --list-monitors
+pbRecorder-cli --list-windows
+pbRecorder-cli --list-audio-devices
+```
+
+### 基本的な録画
+
+```bash
+# 画面全体を録画、Ctrl+Cで停止
+pbRecorder-cli --cli --auto-name -o ./Output/
+
+# 60秒間録画
+pbRecorder-cli --cli --duration 60 --auto-name -o ./Output/
+
+# 出力ファイル指定
+pbRecorder-cli --cli -o recording.mp4
+```
+
+### キャプチャモード
+
+```bash
+# 画面全体（モニター指定）
+pbRecorder-cli --cli --mode screen --monitor 1 -o out.mp4
+
+# ウィンドウ（タイトル部分一致）
+pbRecorder-cli --cli --mode window --window "Chrome" -o out.mp4
+
+# 範囲指定
+pbRecorder-cli --cli --mode region --region 0,0,1920,1080 -o out.mp4
+```
+
+### 映像設定
+
+```bash
+# H.264, 60fps, 12Mbps, Highプロファイル
+pbRecorder-cli --cli --vcodec h264 --container mp4 --fps 60 --vbitrate 12000 \
+  --profile high --level 4.1 --hw-encoder -o out.mp4
+
+# WMV, 30fps
+pbRecorder-cli --cli --vcodec wmv --fps 30 --vbitrate 5000 -o out.wmv
+
+# MKVコンテナ
+pbRecorder-cli --cli --vcodec h264 --container mkv -o out.mkv
+```
+
+### 音声設定
+
+```bash
+# システム音声 + マイク
+pbRecorder-cli --cli --audio-out 0 --audio-in 0 --acodec aac --abitrate 192 -o out.mp4
+
+# 音声なし
+pbRecorder-cli --cli --no-audio -o out.mp4
+
+# MKV + Opus
+pbRecorder-cli --cli --container mkv --acodec opus --abitrate 128 -o out.mkv
+
+# MKV + PCM (96kHz/24bit)
+pbRecorder-cli --cli --container mkv --acodec pcm --sample-rate 96000 --bit-depth 24 -o out.mkv
+```
+
+### 全オプション一覧
+
+`pbRecorder-cli --help` で全オプションを確認できます。
 
 ## ビルド方法
 
@@ -52,7 +143,7 @@ Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Dup
 - CMake 3.24以上
 - Qt 6.9以上
 - MinGW-w64 または MSVC
-- （任意）ASIO SDK - `third_party/asiosdk/` に配置
+- （任意）ASIO SDK — `third_party/asiosdk/` に配置
 
 ### ビルド手順
 
@@ -62,19 +153,11 @@ cmake .. -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH="<Qt6のパス>"
 cmake --build . --config Release -- -j4
 ```
 
+以下の2つの実行ファイルが生成されます:
+- `pbRecorder.exe` — GUIアプリケーション（WIN32サブシステム）
+- `pbRecorder-cli.exe` — CLIアプリケーション（CONSOLEサブシステム）
+
 サードパーティライブラリ（libebml, libmatroska, libogg, libvorbis, libopus）はCMakeのFetchContentで自動的にダウンロード・ビルドされます。
-
-## 使い方
-
-1. キャプチャソースを選択（画面全体/ウィンドウ/範囲指定）
-2. 必要に応じて音声デバイスを選択
-3. コンテナ形式・コーデックを設定
-4. 出力先ファイルパスを設定
-5. 録画ボタン（または `Ctrl+R`）で録画開始/停止
-
-### ショートカットキー
-- `Ctrl+R` - 録画開始/停止
-- 範囲選択時: `Enter` で確定、`Esc` でキャンセル
 
 ## 技術スタック
 
@@ -85,19 +168,19 @@ cmake --build . --config Release -- -j4
 - **音声キャプチャ**: WASAPI (ループバック/マイク), ASIO
 - **音声コーデック**: libopus, libvorbis（MKV用）
 
-## エンコード・デコードについて
+## エンコード・ライセンスについて
 
 pbRecorderは**特許・ライセンス的にクリーンな構成**を採用しています。
 
 ### MP4コンテナ (H.264 + AAC/MP3)
 - Windows標準の **Media Foundation** を使用してエンコード
 - H.264/AACのコーデック実装はOS内蔵のものを利用するため、本アプリにコーデックライブラリは含まれていません
-- FFmpegやx264等のGPL/LGPLライブラリは**一切使用していません**
+- **FFmpegやx264等のGPL/LGPLライブラリは一切使用していません**
 
 ### MKVコンテナ (H.264 + Opus/Vorbis/PCM)
-- 映像エンコード: Media Foundation (OS内蔵H.264エンコーダ) でraw H.264 NALUを生成し、**libmatroska/libebml** でMKVコンテナに直接書き込み
-- 音声エンコード: **libopus** (BSD) または **libvorbis** (BSD) を使用
-- MKVコンテナ: **libmatroska** (LGPL) + **libebml** (LGPL) によるネイティブ実装
+- 映像: Media Foundation でraw H.264 NALUを生成し、**libmatroska/libebml** でMKVコンテナに直接書き込み
+- 音声: **libopus** (BSD) または **libvorbis** (BSD)
+- コンテナ: **libmatroska** (LGPL) + **libebml** (LGPL)
 - PCM（無圧縮）での録音も可能
 
 ### WMVコンテナ (WMV + WMA)

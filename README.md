@@ -4,7 +4,7 @@
 
 # pbRecorder
 
-A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for high-performance capture with support for multiple codecs and container formats.
+A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for high-performance capture with support for multiple codecs and container formats. Includes both GUI and CLI.
 
 [日本語版 README](README_ja.md)
 
@@ -20,6 +20,7 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 ### Video
 - **Codecs**: H.264, WMV
 - **Hardware encoding**: GPU encoding via Media Foundation
+- **H.264 options**: Profile (Baseline/Main/High), Level (Auto/4.0–5.1)
 - **Frame rate**: Up to 240fps
 - **Bitrate**: Configurable (default 8 Mbps)
 - **Mouse cursor**: Toggle capture on/off
@@ -38,6 +39,7 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 - **Preset system** — Save and load recording configurations
 - **Language switching** — English / Japanese UI
 - **Portable** — Settings stored in JSON file next to exe (no registry)
+- **CLI support** — Full-featured command-line interface (`pbRecorder-cli.exe`)
 
 ## System Requirements
 
@@ -49,7 +51,91 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 1. Download ZIP from [Releases](https://github.com/hiroshi-tamura/pbRecorder/releases)
 2. Extract to any folder
-3. Run `pbRecorder.exe`
+3. Run `pbRecorder.exe` (GUI) or `pbRecorder-cli.exe` (CLI)
+
+## GUI Usage
+
+1. Select capture source (Full Screen / Window / Region)
+2. Select audio devices if needed
+3. Configure container format and codecs
+4. Set output folder and filename
+5. Click Record (or `Ctrl+R`) to start/stop
+
+### Keyboard Shortcuts
+- `Ctrl+R` — Start/stop recording
+- Region selection: `Enter` to confirm, `Esc` to cancel
+
+## CLI Usage
+
+`pbRecorder-cli.exe` provides full recording functionality from the command line.
+
+### Device Enumeration
+
+```bash
+pbRecorder-cli --list-monitors
+pbRecorder-cli --list-windows
+pbRecorder-cli --list-audio-devices
+```
+
+### Basic Recording
+
+```bash
+# Record full screen, stop with Ctrl+C
+pbRecorder-cli --cli --auto-name -o ./Output/
+
+# Record for 60 seconds
+pbRecorder-cli --cli --duration 60 --auto-name -o ./Output/
+
+# Specify output file
+pbRecorder-cli --cli -o recording.mp4
+```
+
+### Capture Modes
+
+```bash
+# Full screen (specific monitor)
+pbRecorder-cli --cli --mode screen --monitor 1 -o out.mp4
+
+# Window (title match)
+pbRecorder-cli --cli --mode window --window "Chrome" -o out.mp4
+
+# Region
+pbRecorder-cli --cli --mode region --region 0,0,1920,1080 -o out.mp4
+```
+
+### Video Settings
+
+```bash
+# H.264, 60fps, 12Mbps, High profile
+pbRecorder-cli --cli --vcodec h264 --container mp4 --fps 60 --vbitrate 12000 \
+  --profile high --level 4.1 --hw-encoder -o out.mp4
+
+# WMV, 30fps
+pbRecorder-cli --cli --vcodec wmv --fps 30 --vbitrate 5000 -o out.wmv
+
+# MKV container
+pbRecorder-cli --cli --vcodec h264 --container mkv -o out.mkv
+```
+
+### Audio Settings
+
+```bash
+# System audio + microphone
+pbRecorder-cli --cli --audio-out 0 --audio-in 0 --acodec aac --abitrate 192 -o out.mp4
+
+# No audio
+pbRecorder-cli --cli --no-audio -o out.mp4
+
+# MKV + Opus
+pbRecorder-cli --cli --container mkv --acodec opus --abitrate 128 -o out.mkv
+
+# MKV + PCM (96kHz/24bit)
+pbRecorder-cli --cli --container mkv --acodec pcm --sample-rate 96000 --bit-depth 24 -o out.mkv
+```
+
+### All CLI Options
+
+Run `pbRecorder-cli --help` for the complete list of options.
 
 ## Building from Source
 
@@ -67,19 +153,11 @@ cmake .. -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH="<path-to-Qt6>"
 cmake --build . --config Release -- -j4
 ```
 
+This produces two executables:
+- `pbRecorder.exe` — GUI application (WIN32 subsystem)
+- `pbRecorder-cli.exe` — CLI application (CONSOLE subsystem)
+
 Third-party libraries (libebml, libmatroska, libogg, libvorbis, libopus) are automatically downloaded and built via CMake FetchContent.
-
-## Usage
-
-1. Select capture source (Full Screen / Window / Region)
-2. Select audio devices if needed
-3. Configure container format and codecs
-4. Set output folder and filename
-5. Click Record (or `Ctrl+R`) to start/stop
-
-### Keyboard Shortcuts
-- `Ctrl+R` — Start/stop recording
-- Region selection: `Enter` to confirm, `Esc` to cancel
 
 ## Tech Stack
 
