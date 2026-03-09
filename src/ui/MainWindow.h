@@ -128,4 +128,11 @@ private:
     QTimer meterTimer_;
     void setupPeakMeters();
     void updatePeakMeters();
+
+    // Metering sessions (keep WASAPI devices active for peak meters)
+    struct MeteringSession;
+    std::unique_ptr<MeteringSession> outputMeteringSession_;
+    std::unique_ptr<MeteringSession> inputMeteringSession_;
+    void rebuildMeteringSessions();
+    void releaseMeteringSessions();
 };

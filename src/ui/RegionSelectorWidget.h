@@ -7,6 +7,9 @@
 #include <QImage>
 #include <vector>
 
+#include <windows.h>
+#include <shellscalingapi.h>
+
 class RegionSelectorWidget : public QWidget
 {
     Q_OBJECT
@@ -63,4 +66,7 @@ private:
     Edge hoveredEdge_ = EdgeNone;
     Edge draggingEdge_ = EdgeNone;
     QRect adjustedSelection_;
+
+    // Physical monitor tracking for multi-DPI coordinate conversion
+    HMONITOR selectionMonitor_ = nullptr;
 };

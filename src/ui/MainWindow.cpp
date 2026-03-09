@@ -29,6 +29,7 @@
 #include "PeakMeterWidget.h"
 
 #include <mmdeviceapi.h>
+#include <audioclient.h>
 
 // MinGW's endpointvolume.h only forward-declares IAudioMeterInformation.
 // Define the COM interface manually.
@@ -51,6 +52,85 @@ static const GUID IID_IAudioMeterInformation = {
     {0x9D, 0x00, 0xD0, 0x08, 0xE7, 0x3E, 0x00, 0x64}
 };
 #endif
+
+// ============================================================================
+// Metering Session — keeps WASAPI device active for IAudioMeterInformation
+// ============================================================================
+
+struct MainWindow::MeteringSession {
+    IAudioMeterInformation* meter = nullptr;
+    IAudioClient* client = nullptr;  // keeps capture devices active
+    std::wstring deviceId;
+
+    ~MeteringSession() { release(); }
+
+    void release() {
+        if (meter) { meter->Release(); meter = nullptr; }
+        if (client) { client->Stop(); client->Release(); client = nullptr; }
+    }
+
+    float getPeak() {
+        if (!meter) return 0.0f;
+        float peak = 0.0f;
+        meter->GetPeakValue(&peak);
+        return peak;
+    }
+
+    static std::unique_ptr<MeteringSession> create(const std::wstring& id, bool isCapture) {
+        if (id.empty()) return nullptr;
+
+        IMMDeviceEnumerator* enumerator = nullptr;
+        HRESULT hr = CoCreateInstance(
+            __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator));
+        if (FAILED(hr) || !enumerator) return nullptr;
+
+        IMMDevice* device = nullptr;
+        hr = enumerator->GetDevice(id.c_str(), &device);
+        enumerator->Release();
+        if (FAILED(hr) || !device) return nullptr;
+
+        auto session = std::make_unique<MeteringSession>();
+        session->deviceId = id;
+
+        // For capture devices, create a shared-mode IAudioClient session
+        // to keep hardware active so IAudioMeterInformation reports levels
+        if (isCapture) {
+            IAudioClient* ac = nullptr;
+            hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL,
+                                  nullptr, reinterpret_cast<void**>(&ac));
+            if (SUCCEEDED(hr) && ac) {
+                WAVEFORMATEX* fmt = nullptr;
+                hr = ac->GetMixFormat(&fmt);
+                if (SUCCEEDED(hr) && fmt) {
+                    hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                                        0, 10000000, 0, fmt, nullptr);
+                    CoTaskMemFree(fmt);
+                    if (SUCCEEDED(hr)) {
+                        ac->Start();
+                        session->client = ac;
+                    } else {
+                        ac->Release();
+                    }
+                } else {
+                    ac->Release();
+                }
+            }
+        }
+
+        // Get IAudioMeterInformation
+        hr = device->Activate(IID_IAudioMeterInformation, CLSCTX_ALL,
+                              nullptr, reinterpret_cast<void**>(&session->meter));
+        device->Release();
+
+        if (FAILED(hr) || !session->meter) {
+            session->release();
+            return nullptr;
+        }
+
+        return session;
+    }
+};
 
 // ============================================================================
 // Construction / Destruction
@@ -820,6 +900,9 @@ void MainWindow::onRecord()
             return;
         }
 
+        // Release metering sessions to avoid WASAPI device conflicts
+        releaseMeteringSessions();
+
         pb::RecordingConfig config = buildRecordingConfig();
 
         // Create and initialize recording session
@@ -843,12 +926,14 @@ void MainWindow::onRecord()
             QMessageBox::critical(this, tr("エラー"),
                 tr("録画セッションの初期化に失敗しました。\nキャプチャソースとオーディオデバイスが利用可能か確認してください。"));
             session_.reset();
+            rebuildMeteringSessions();
             return;
         }
 
         if (!session_->start()) {
             QMessageBox::critical(this, tr("エラー"), tr("録画の開始に失敗しました。"));
             session_.reset();
+            rebuildMeteringSessions();
             return;
         }
 
@@ -863,6 +948,9 @@ void MainWindow::onRecord()
 
         setRecordingState(false);
         statusBar()->showMessage(tr("録画を停止しました"), 5000);
+
+        // Rebuild metering sessions for live meters
+        rebuildMeteringSessions();
     }
 }
 
@@ -1553,37 +1641,57 @@ void MainWindow::setupPeakMeters()
         audioLayout->addWidget(inputMeter_, 4, 0, 1, 3);
     }
 
+    // Rebuild metering sessions when device selection changes
+    connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::rebuildMeteringSessions);
+    connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::rebuildMeteringSessions);
+
+    // Build initial metering sessions
+    rebuildMeteringSessions();
+
     // Start meter update timer (50ms = 20fps)
     connect(&meterTimer_, &QTimer::timeout, this, &MainWindow::updatePeakMeters);
     meterTimer_.start(50);
 }
 
-// Helper: get peak level from WASAPI device using IAudioMeterInformation
-static float getWasapiPeakLevel(const std::wstring& deviceId) {
-    if (deviceId.empty()) return 0.0f;
+void MainWindow::rebuildMeteringSessions()
+{
+    // Output device
+    int outIdx = ui->outputAudioCombo->currentIndex();
+    if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
+        const auto& dev = outputAudioDevices_[outIdx - 1];
+        if (dev.type == pb::AudioDeviceType::WASAPI_Render) {
+            if (!outputMeteringSession_ || outputMeteringSession_->deviceId != dev.id) {
+                outputMeteringSession_ = MeteringSession::create(dev.id, false);
+            }
+        } else {
+            outputMeteringSession_.reset();
+        }
+    } else {
+        outputMeteringSession_.reset();
+    }
 
-    IMMDeviceEnumerator* enumerator = nullptr;
-    HRESULT hr = CoCreateInstance(
-        __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-        __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator));
-    if (FAILED(hr) || !enumerator) return 0.0f;
+    // Input device
+    int inIdx = ui->inputAudioCombo->currentIndex();
+    if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
+        const auto& dev = inputAudioDevices_[inIdx - 1];
+        if (dev.type == pb::AudioDeviceType::WASAPI_Capture) {
+            if (!inputMeteringSession_ || inputMeteringSession_->deviceId != dev.id) {
+                inputMeteringSession_ = MeteringSession::create(dev.id, true);
+            }
+        } else {
+            inputMeteringSession_.reset();
+        }
+    } else {
+        inputMeteringSession_.reset();
+    }
+}
 
-    IMMDevice* device = nullptr;
-    hr = enumerator->GetDevice(deviceId.c_str(), &device);
-    enumerator->Release();
-    if (FAILED(hr) || !device) return 0.0f;
-
-    IAudioMeterInformation* meter = nullptr;
-    hr = device->Activate(IID_IAudioMeterInformation, CLSCTX_ALL,
-                          nullptr, reinterpret_cast<void**>(&meter));
-    device->Release();
-    if (FAILED(hr) || !meter) return 0.0f;
-
-    float peak = 0.0f;
-    meter->GetPeakValue(&peak);
-    meter->Release();
-
-    return peak;
+void MainWindow::releaseMeteringSessions()
+{
+    outputMeteringSession_.reset();
+    inputMeteringSession_.reset();
 }
 
 void MainWindow::updatePeakMeters()
@@ -1593,7 +1701,11 @@ void MainWindow::updatePeakMeters()
     if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
         const auto& dev = outputAudioDevices_[outIdx - 1];
         if (dev.type == pb::AudioDeviceType::WASAPI_Render) {
-            outputMeter_->setLevel(getWasapiPeakLevel(dev.id));
+            if (outputMeteringSession_) {
+                outputMeter_->setLevel(outputMeteringSession_->getPeak());
+            } else {
+                outputMeter_->setLevel(0.0f);
+            }
         } else if (dev.type == pb::AudioDeviceType::ASIO ||
                    dev.type == pb::AudioDeviceType::ASIO_Output) {
             outputMeter_->setLevel(pb::AsioCapture::getInstancePeakLevel());
@@ -1609,7 +1721,11 @@ void MainWindow::updatePeakMeters()
     if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
         const auto& dev = inputAudioDevices_[inIdx - 1];
         if (dev.type == pb::AudioDeviceType::WASAPI_Capture) {
-            inputMeter_->setLevel(getWasapiPeakLevel(dev.id));
+            if (inputMeteringSession_) {
+                inputMeter_->setLevel(inputMeteringSession_->getPeak());
+            } else {
+                inputMeter_->setLevel(0.0f);
+            }
         } else if (dev.type == pb::AudioDeviceType::ASIO) {
             inputMeter_->setLevel(pb::AsioCapture::getInstancePeakLevel());
         } else {

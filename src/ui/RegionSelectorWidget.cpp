@@ -156,6 +156,11 @@ void RegionSelectorWidget::mousePressEvent(QMouseEvent *event)
             }
         }
 
+        // Track physical cursor position to determine the correct monitor
+        POINT physPt;
+        GetCursorPos(&physPt);
+        selectionMonitor_ = MonitorFromPoint(physPt, MONITOR_DEFAULTTONEAREST);
+
         selecting_ = true;
         hasSelection_ = false;
         draggingEdge_ = EdgeNone;
@@ -264,6 +269,19 @@ void RegionSelectorWidget::mouseReleaseEvent(QMouseEvent *event)
 
             if (sel.width() > 5 && sel.height() > 5) {
                 hasSelection_ = true;
+
+                // Update selectionMonitor_ to the monitor at the center
+                // of the final selection (handles cross-monitor drags)
+                QPoint globalCenter = mapToGlobal(sel.center());
+                QScreen *centerScreen = QGuiApplication::screenAt(globalCenter);
+                if (centerScreen) {
+                    qreal dpr = centerScreen->devicePixelRatio();
+                    int estPhysX = static_cast<int>(globalCenter.x() * dpr);
+                    int estPhysY = static_cast<int>(globalCenter.y() * dpr);
+                    POINT pt = { estPhysX, estPhysY };
+                    selectionMonitor_ = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+                }
+
                 updateDimensionLabel();
             } else {
                 hasSelection_ = false;
@@ -315,17 +333,46 @@ QRect RegionSelectorWidget::virtualDesktopGeometry() const
 
 QRect RegionSelectorWidget::toPhysicalPixels(const QRect &logicalRect) const
 {
-    QPoint center = logicalRect.center();
-    QPoint globalCenter = mapToGlobal(center);
+    // Use the tracked physical monitor for accurate per-monitor DPI conversion.
+    // With Per-Monitor V2, Qt's logical coordinates can overlap across screens
+    // with different DPRs, so QGuiApplication::screenAt() may return the wrong
+    // screen. Using the HMONITOR from GetCursorPos() avoids this ambiguity.
 
+    if (selectionMonitor_) {
+        MONITORINFO mi = { sizeof(mi) };
+        GetMonitorInfo(selectionMonitor_, &mi);
+
+        UINT dpiX = 96, dpiY = 96;
+        GetDpiForMonitor(selectionMonitor_, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+        qreal dpr = static_cast<qreal>(dpiX) / 96.0;
+
+        // Physical screen origin
+        int physOX = mi.rcMonitor.left;
+        int physOY = mi.rcMonitor.top;
+
+        // Logical screen origin (as Qt computes: physical / dpr)
+        qreal logOX = physOX / dpr;
+        qreal logOY = physOY / dpr;
+
+        QPoint globalTL = mapToGlobal(logicalRect.topLeft());
+
+        int physX = physOX + static_cast<int>((globalTL.x() - logOX) * dpr);
+        int physY = physOY + static_cast<int>((globalTL.y() - logOY) * dpr);
+        int physW = static_cast<int>(logicalRect.width() * dpr);
+        int physH = static_cast<int>(logicalRect.height() * dpr);
+
+        return QRect(physX, physY, physW, physH);
+    }
+
+    // Fallback: use primary screen DPR
     qreal dpr = devicePixelRatio_;
+    QPoint globalCenter = mapToGlobal(logicalRect.center());
     QScreen *targetScreen = QGuiApplication::screenAt(globalCenter);
     if (targetScreen) {
         dpr = targetScreen->devicePixelRatio();
     }
 
     QPoint globalTopLeft = mapToGlobal(logicalRect.topLeft());
-
     return QRect(
         static_cast<int>(globalTopLeft.x() * dpr),
         static_cast<int>(globalTopLeft.y() * dpr),
@@ -374,13 +421,26 @@ void RegionSelectorWidget::updateDimensionLabel()
 
 void RegionSelectorWidget::captureScreenImage()
 {
-    QScreen *screen = QGuiApplication::primaryScreen();
-    if (!screen) return;
-
-    // Capture the entire virtual desktop
+    // Capture each screen individually and compose into a single image
+    // to handle different DPIs correctly
     QRect vd = virtualDesktopGeometry();
-    QPixmap pixmap = screen->grabWindow(0, vd.x(), vd.y(), vd.width(), vd.height());
-    screenCapture_ = pixmap.toImage().convertToFormat(QImage::Format_Grayscale8);
+    QImage combined(vd.size(), QImage::Format_Grayscale8);
+    combined.fill(0);
+
+    for (QScreen *screen : QGuiApplication::screens()) {
+        QPixmap pixmap = screen->grabWindow(0);
+        QImage img = pixmap.toImage().convertToFormat(QImage::Format_Grayscale8);
+
+        // Scale to logical size (widget coordinates)
+        QRect logGeom = screen->geometry();
+        QImage scaled = img.scaled(logGeom.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+
+        // Paint into combined image at the screen's logical position
+        QPainter painter(&combined);
+        painter.drawImage(logGeom.topLeft() - vd.topLeft(), scaled);
+    }
+
+    screenCapture_ = combined;
 }
 
 void RegionSelectorWidget::detectEdges()
