@@ -5,3 +5,12 @@ debug_capture.log
 *.user
 *.swp
 *~
+
+# Local-only working files (may contain paths/personal info — never push)
+HANDOVER.md
+Log
+Log/
+*.log
+screenshots/
+reports/
+pbRecorder-*.zip
