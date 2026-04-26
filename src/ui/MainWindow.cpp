@@ -13,6 +13,7 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QCloseEvent>
+#include <QShowEvent>
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QDebug>
@@ -24,6 +25,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QStyle>
+#include <QPushButton>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QStatusBar>
+#include <windows.h>
 
 #include "SettingsDialog.h"
 #include "PeakMeterWidget.h"
@@ -181,9 +187,27 @@ MainWindow::MainWindow(QWidget *parent)
     // Load presets and restore last session
     loadPresets();
     loadSettings();
+
+    // "Open Folder" button on the status bar (permanent widget)
+    openFolderBtn_ = new QPushButton(this);
+    openFolderBtn_->setFlat(true);
+    openFolderBtn_->setEnabled(false);
+    openFolderBtn_->setCursor(Qt::PointingHandCursor);
+    connect(openFolderBtn_, &QPushButton::clicked, this, [this]() {
+        if (lastSavedPath_.isEmpty()) return;
+        QString dir = QFileInfo(lastSavedPath_).absolutePath();
+        if (!dir.isEmpty()) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+        }
+    });
+    statusBar()->addPermanentWidget(openFolderBtn_);
+
     retranslateUi();
 
     statusBar()->showMessage(currentLang_ == "ja" ? tr("準備完了") : tr("Ready"));
+
+    // Initialize record button guard for current capture mode
+    updateRecordButtonGuard();
 
     // Auto-test mode: --auto-test records for 5 seconds then exits
     if (QCoreApplication::arguments().contains("--auto-test")) {
@@ -199,18 +223,52 @@ MainWindow::MainWindow(QWidget *parent)
     }
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow()
+{
+    if (hotkeyRegistered_) {
+        UnregisterHotKey(reinterpret_cast<HWND>(winId()), 1);
+        hotkeyRegistered_ = false;
+    }
+}
 
 // ============================================================================
 // Event overrides
 // ============================================================================
 
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    // Register Ctrl+Shift+R global hotkey on first show (winId() must be valid)
+    if (!hotkeyRegistered_) {
+        if (RegisterHotKey(reinterpret_cast<HWND>(winId()), 1,
+                           MOD_CONTROL | MOD_SHIFT, 'R')) {
+            hotkeyRegistered_ = true;
+        }
+    }
+}
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+    if (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG") {
+        MSG *msg = static_cast<MSG *>(message);
+        if (msg && msg->message == WM_HOTKEY && msg->wParam == 1) {
+            onRecord();
+            if (result) *result = 0;
+            return true;
+        }
+    }
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     if (isRecording_) {
+        const bool ja = (currentLang_ == "ja");
         auto ret = QMessageBox::question(
-            this, tr("録画中"),
-            tr("録画中です。録画を停止して終了しますか？"),
+            this,
+            ja ? "録画中" : "Recording",
+            ja ? "録画中です。録画を停止して終了しますか？"
+               : "Recording is in progress. Stop recording and exit?",
             QMessageBox::Yes | QMessageBox::No);
         if (ret == QMessageBox::No) {
             event->ignore();
@@ -363,6 +421,17 @@ void MainWindow::setupConnections()
     // Update timer
     connect(&updateTimer_, &QTimer::timeout,
             this, &MainWindow::onUpdateTimer);
+
+    // Quality slider tooltips: dynamic value display
+    auto setupQualityTooltip = [](QSlider *s) {
+        if (!s) return;
+        s->setToolTip(QString("%1 %").arg(s->value()));
+        connect(s, &QSlider::valueChanged, s, [s](int v) {
+            s->setToolTip(QString("%1 %").arg(v));
+        });
+    };
+    setupQualityTooltip(ui->videoQualitySlider);
+    setupQualityTooltip(ui->vorbisQualitySlider);
 }
 
 // ============================================================================
@@ -392,6 +461,25 @@ void MainWindow::updateCaptureWidgetVisibility(int mode)
     ui->regionInfoLabel->setVisible(showRegion);
     ui->selectRegionBtn->setVisible(showRegion);
     ui->autoAdjustCheck->setVisible(showRegion);
+
+    updateRecordButtonGuard();
+}
+
+void MainWindow::updateRecordButtonGuard()
+{
+    // Don't touch the record button while recording is in progress
+    if (isRecording_) return;
+
+    bool ja = (currentLang_ == "ja");
+    int mode = ui->captureModeCombo->currentIndex();
+
+    if (mode == 2 && !regionSelected_) {
+        ui->recordBtn->setEnabled(false);
+        statusBar()->showMessage(
+            ja ? "範囲を選択してください" : "Please select a region first");
+    } else {
+        ui->recordBtn->setEnabled(true);
+    }
 }
 
 // ============================================================================
@@ -517,6 +605,7 @@ void MainWindow::validateAudioCodec()
 
     bool incompatible = (maxCodecChannels > 0 && maxUsedChannels > maxCodecChannels);
 
+    const bool ja = (currentLang_ == "ja");
     if (incompatible) {
         ui->audioCodecCombo->setStyleSheet(
             "QComboBox { border: 2px solid red; color: red; "
@@ -524,7 +613,8 @@ void MainWindow::validateAudioCodec()
             "QComboBox::drop-down { border: none; }"
             "QComboBox QAbstractItemView { color: white; background-color: #232323; }");
         ui->audioCodecCombo->setToolTip(
-            tr("%1 は最大 %2ch までです（現在 %3ch）")
+            (ja ? QStringLiteral("%1 は最大 %2ch までです（現在 %3ch）")
+                : QStringLiteral("%1 supports up to %2 ch (current %3 ch)"))
                 .arg(ui->audioCodecCombo->currentText())
                 .arg(maxCodecChannels)
                 .arg(maxUsedChannels));
@@ -538,7 +628,8 @@ void MainWindow::validateAudioCodec()
         ui->recordBtn->setEnabled(!incompatible);
         if (incompatible) {
             statusBar()->showMessage(
-                tr("録音不可: %1 は %2ch に対応していません")
+                (ja ? QStringLiteral("録音不可: %1 は %2ch に対応していません")
+                    : QStringLiteral("Cannot record: %1 does not support %2 ch"))
                     .arg(ui->audioCodecCombo->currentText())
                     .arg(maxUsedChannels));
         }
@@ -783,8 +874,11 @@ void MainWindow::populateAudioDevices()
         qWarning() << "ASIO enumeration failed:" << e.what();
     }
 
+    const bool ja = (currentLang_ == "ja");
+    const QString noneItem = ja ? QStringLiteral("なし") : QStringLiteral("None");
+
     // Output devices (system audio / speakers / ASIO output)
-    ui->outputAudioCombo->addItem(tr("なし"));
+    ui->outputAudioCombo->addItem(noneItem);
     for (const auto& dev : outputAudioDevices_) {
         QString prefix;
         if (dev.type == pb::AudioDeviceType::ASIO_Output) prefix = "[ASIO] ";
@@ -796,7 +890,7 @@ void MainWindow::populateAudioDevices()
     }
 
     // Input devices (microphones + ASIO)
-    ui->inputAudioCombo->addItem(tr("なし"));
+    ui->inputAudioCombo->addItem(noneItem);
     for (const auto& dev : inputAudioDevices_) {
         QString prefix;
         if (dev.type == pb::AudioDeviceType::ASIO) prefix = "[ASIO] ";
@@ -811,7 +905,9 @@ void MainWindow::populateAudioDevices()
 void MainWindow::onRefreshWindows()
 {
     populateWindows();
-    statusBar()->showMessage(tr("ウィンドウ一覧を更新しました"), 3000);
+    const bool ja = (currentLang_ == "ja");
+    statusBar()->showMessage(
+        ja ? "ウィンドウ一覧を更新しました" : "Window list refreshed", 3000);
 }
 
 void MainWindow::onSelectRegion()
@@ -830,11 +926,16 @@ void MainWindow::onSelectRegion()
         ui->regionInfoLabel->setText(
             QString("%1,%2  %3x%4").arg(x).arg(y).arg(w).arg(h));
         ui->regionInfoLabel->setStyleSheet("");
-        statusBar()->showMessage(tr("範囲を選択しました"), 3000);
+        const bool ja = (currentLang_ == "ja");
+        statusBar()->showMessage(
+            ja ? "範囲を選択しました" : "Region selected", 3000);
+        updateRecordButtonGuard();
     });
     connect(selector, &RegionSelectorWidget::selectionCancelled,
             this, [this]() {
-        statusBar()->showMessage(tr("範囲選択がキャンセルされました"), 3000);
+        const bool ja = (currentLang_ == "ja");
+        statusBar()->showMessage(
+            ja ? "範囲選択がキャンセルされました" : "Region selection cancelled", 3000);
     });
     selector->show();
 }
@@ -846,8 +947,11 @@ void MainWindow::onBrowse()
         currentDir = QCoreApplication::applicationDirPath() + "/Output";
     }
 
+    const bool jaBrowse = (currentLang_ == "ja");
     QString dir = QFileDialog::getExistingDirectory(
-        this, tr("出力フォルダを選択"), currentDir,
+        this,
+        jaBrowse ? "出力フォルダを選択" : "Select output folder",
+        currentDir,
         QFileDialog::ShowDirsOnly | QFileDialog::DontUseNativeDialog);
 
     if (!dir.isEmpty()) {
@@ -861,6 +965,9 @@ void MainWindow::onBrowse()
 
 void MainWindow::onRecord()
 {
+    const bool ja = (currentLang_ == "ja");
+    const QString errTitle = ja ? "エラー" : "Error";
+
     if (!isRecording_) {
         // 自動ファイル名の場合、録画開始時に日時を更新
         if (ui->autoFileNameCheck->isChecked()) {
@@ -869,11 +976,15 @@ void MainWindow::onRecord()
 
         // Validate
         if (ui->outputDirEdit->text().trimmed().isEmpty()) {
-            QMessageBox::warning(this, tr("エラー"), tr("出力フォルダを指定してください。"));
+            QMessageBox::warning(this, errTitle,
+                ja ? "出力フォルダを指定してください。"
+                   : "Please specify an output folder.");
             return;
         }
         if (ui->outputFileEdit->text().trimmed().isEmpty()) {
-            QMessageBox::warning(this, tr("エラー"), tr("ファイル名を指定してください。"));
+            QMessageBox::warning(this, errTitle,
+                ja ? "ファイル名を指定してください。"
+                   : "Please specify a filename.");
             return;
         }
 
@@ -881,7 +992,9 @@ void MainWindow::onRecord()
         QDir().mkpath(ui->outputDirEdit->text());
 
         if (ui->captureModeCombo->currentIndex() == 2 && !regionSelected_) {
-            QMessageBox::warning(this, tr("エラー"), tr("先にキャプチャ範囲を選択してください。"));
+            QMessageBox::warning(this, errTitle,
+                ja ? "先にキャプチャ範囲を選択してください。"
+                   : "Please select a capture region first.");
             return;
         }
 
@@ -893,12 +1006,13 @@ void MainWindow::onRecord()
         // Create and initialize recording session
         session_ = std::make_unique<pb::RecordingSession>();
         errorShown_ = false;
-        session_->setErrorCallback([this](const std::string& error) {
-            QMetaObject::invokeMethod(this, [this, error]() {
+        session_->setErrorCallback([this, ja](const std::string& error) {
+            QMetaObject::invokeMethod(this, [this, ja, error]() {
                 statusBar()->showMessage(QString::fromStdString("Error: " + error));
                 if (!errorShown_) {
                     errorShown_ = true;
-                    QMessageBox::critical(this, tr("録画エラー"),
+                    QMessageBox::critical(this,
+                        ja ? "録画エラー" : "Recording error",
                         QString::fromStdString(error));
                     if (isRecording_) {
                         onRecord(); // stop
@@ -908,31 +1022,54 @@ void MainWindow::onRecord()
         });
 
         if (!session_->initialize(config)) {
-            QMessageBox::critical(this, tr("エラー"),
-                tr("録画セッションの初期化に失敗しました。\nキャプチャソースとオーディオデバイスが利用可能か確認してください。"));
+            QMessageBox::critical(this, errTitle,
+                ja ? "録画セッションの初期化に失敗しました。\nキャプチャソースとオーディオデバイスが利用可能か確認してください。"
+                   : "Failed to initialize recording session.\nVerify the capture source and audio device are available.");
             session_.reset();
             rebuildMeteringSessions();
             return;
         }
 
         if (!session_->start()) {
-            QMessageBox::critical(this, tr("エラー"), tr("録画の開始に失敗しました。"));
+            QMessageBox::critical(this, errTitle,
+                ja ? "録画の開始に失敗しました。" : "Failed to start recording.");
             session_.reset();
             rebuildMeteringSessions();
             return;
         }
 
         setRecordingState(true);
-        statusBar()->showMessage(tr("録画を開始しました"));
+        statusBar()->showMessage(ja ? "● 録画中…" : "● Recording…");
     } else {
         // Stop recording
+        QString outPath = getOutputFilePath();
+        int64_t finalSize = 0;
         if (session_) {
+            finalSize = session_->getFileSize();
             session_->stop();
             session_.reset();
         }
 
         setRecordingState(false);
-        statusBar()->showMessage(tr("録画を停止しました"), 5000);
+
+        // Resolve final file size from disk if available
+        QFileInfo fi(outPath);
+        if (fi.exists()) {
+            int64_t diskSize = fi.size();
+            if (diskSize > 0) finalSize = diskSize;
+            lastSavedPath_ = fi.absoluteFilePath();
+            if (openFolderBtn_) openFolderBtn_->setEnabled(true);
+            QString name = fi.fileName();
+            QString sizeStr = formatFileSize(finalSize);
+            statusBar()->showMessage(
+                (ja ? QStringLiteral("保存しました: %1 (%2)")
+                    : QStringLiteral("Saved: %1 (%2)"))
+                    .arg(name).arg(sizeStr));
+        } else {
+            statusBar()->showMessage(
+                ja ? "録画を停止しました" : "Recording stopped",
+                5000);
+        }
 
         // Rebuild metering sessions for live meters
         rebuildMeteringSessions();
@@ -943,16 +1080,17 @@ void MainWindow::onPause()
 {
     if (!isRecording_ || !session_) return;
 
+    const bool ja = (currentLang_ == "ja");
     if (!isPaused_) {
         session_->pause();
         pauseStartMs_ = recordingElapsed_.elapsed();
         setPausedState(true);
-        statusBar()->showMessage(tr("録画を一時停止しました"));
+        statusBar()->showMessage(ja ? "‖ 一時停止中" : "‖ Paused");
     } else {
         session_->resume();
         pausedAccumMs_ += (recordingElapsed_.elapsed() - pauseStartMs_);
         setPausedState(false);
-        statusBar()->showMessage(tr("録画を再開しました"));
+        statusBar()->showMessage(ja ? "● 録画中…" : "● Recording…");
     }
 }
 
@@ -962,15 +1100,21 @@ void MainWindow::setRecordingState(bool recording)
     isPaused_ = false;
     pausedAccumMs_ = 0;
 
+    bool ja = (currentLang_ == "ja");
+
     if (recording) {
-        ui->recordBtn->setText(tr("停止"));
+        ui->recordBtn->setText(ja ? "停止" : "Stop");
         ui->recordBtn->setStyleSheet(
             "QPushButton { background-color: #336699; color: white; border-radius: 6px; }"
             "QPushButton:hover { background-color: #4477aa; }");
         ui->pauseBtn->setEnabled(true);
-        ui->pauseBtn->setText(tr("一時停止"));
+        ui->pauseBtn->setText(ja ? "一時停止" : "Pause");
         recordingElapsed_.start();
         updateTimer_.start(100);
+
+        // Title bar reflects recording state
+        setWindowTitle(ja ? QString::fromUtf8("● 録画中 - pbRecorder")
+                          : QString::fromUtf8("● Recording - pbRecorder"));
 
         // Disable settings during recording
         ui->sourceGroupBox->setEnabled(false);
@@ -978,26 +1122,41 @@ void MainWindow::setRecordingState(bool recording)
         ui->audioGroupBox->setEnabled(false);
         ui->outputGroupBox->setEnabled(false);
     } else {
-        ui->recordBtn->setText(tr("録画"));
+        ui->recordBtn->setText(ja ? "録画" : "Record");
         ui->recordBtn->setStyleSheet(
             "QPushButton { background-color: #cc3333; color: white; border-radius: 6px; }"
             "QPushButton:hover { background-color: #ee4444; }"
             "QPushButton:disabled { background-color: #888888; }");
         ui->pauseBtn->setEnabled(false);
-        ui->pauseBtn->setText(tr("一時停止"));
+        ui->pauseBtn->setText(ja ? "一時停止" : "Pause");
         updateTimer_.stop();
+
+        // Reset duration / file size labels to initial values
+        ui->durationLabel->setText("00:00:00");
+        ui->fileSizeLabel->setText("0 MB");
+
+        // Restore window title
+        setWindowTitle("pbRecorder");
 
         ui->sourceGroupBox->setEnabled(true);
         ui->videoGroupBox->setEnabled(true);
         ui->audioGroupBox->setEnabled(true);
         ui->outputGroupBox->setEnabled(true);
+
+        // Re-evaluate record button guard (e.g. region not selected)
+        updateRecordButtonGuard();
     }
 }
 
 void MainWindow::setPausedState(bool paused)
 {
     isPaused_ = paused;
-    ui->pauseBtn->setText(paused ? tr("再開") : tr("一時停止"));
+    const bool ja = (currentLang_ == "ja");
+    if (paused) {
+        ui->pauseBtn->setText(ja ? "再開" : "Resume");
+    } else {
+        ui->pauseBtn->setText(ja ? "一時停止" : "Pause");
+    }
 }
 
 // ============================================================================
@@ -1015,7 +1174,20 @@ void MainWindow::onUpdateTimer()
     }
     if (activeMs < 0) activeMs = 0;
 
-    ui->durationLabel->setText(formatDuration(activeMs));
+    QString durStr = formatDuration(activeMs);
+    ui->durationLabel->setText(durStr);
+
+    // Update window title with current recording/paused state and duration
+    bool ja = (currentLang_ == "ja");
+    if (isPaused_) {
+        setWindowTitle(ja
+            ? QString::fromUtf8("‖ 一時停止中 %1 - pbRecorder").arg(durStr)
+            : QString::fromUtf8("‖ Paused %1 - pbRecorder").arg(durStr));
+    } else {
+        setWindowTitle(ja
+            ? QString::fromUtf8("● 録画中 %1 - pbRecorder").arg(durStr)
+            : QString::fromUtf8("● Recording %1 - pbRecorder").arg(durStr));
+    }
 
     // Update file size: use actual file size if available, otherwise estimate
     if (session_) {
@@ -1201,9 +1373,10 @@ void MainWindow::saveJson(const QJsonObject& root) const
 
 void MainWindow::loadPresets()
 {
+    const bool ja = (currentLang_ == "ja");
     ui->presetCombo->blockSignals(true);
     ui->presetCombo->clear();
-    ui->presetCombo->addItem(tr("(カスタム)"));
+    ui->presetCombo->addItem(ja ? "(カスタム)" : "(Custom)");
 
     QJsonObject root = loadJson();
     QJsonObject presets = root["presets"].toObject();
@@ -1225,14 +1398,20 @@ void MainWindow::onOverwritePreset()
 
     QString name = ui->presetCombo->currentText();
     saveCurrentAsPreset(name);
-    statusBar()->showMessage(tr("プリセット '%1' を上書き保存しました").arg(name), 3000);
+    const bool ja = (currentLang_ == "ja");
+    statusBar()->showMessage(
+        (ja ? QStringLiteral("プリセット '%1' を上書き保存しました")
+            : QStringLiteral("Preset '%1' overwritten")).arg(name), 3000);
 }
 
 void MainWindow::onSaveAsPreset()
 {
+    const bool ja = (currentLang_ == "ja");
     bool ok = false;
-    QString name = QInputDialog::getText(this, tr("名前をつけて保存"),
-                                         tr("プリセット名:"), QLineEdit::Normal,
+    QString name = QInputDialog::getText(this,
+                                         ja ? "名前をつけて保存" : "Save as new preset",
+                                         ja ? "プリセット名:" : "Preset name:",
+                                         QLineEdit::Normal,
                                          QString(), &ok);
     if (!ok || name.trimmed().isEmpty()) return;
     name = name.trimmed();
@@ -1245,7 +1424,9 @@ void MainWindow::onSaveAsPreset()
         ui->presetCombo->setCurrentIndex(idx);
     }
 
-    statusBar()->showMessage(tr("プリセット '%1' を保存しました").arg(name), 3000);
+    statusBar()->showMessage(
+        (ja ? QStringLiteral("プリセット '%1' を保存しました")
+            : QStringLiteral("Preset '%1' saved")).arg(name), 3000);
 }
 
 void MainWindow::saveCurrentAsPreset(const QString& name)
@@ -1277,17 +1458,22 @@ void MainWindow::saveCurrentAsPreset(const QString& name)
 
 void MainWindow::onDeletePreset()
 {
+    const bool ja = (currentLang_ == "ja");
+    const QString delTitle = ja ? "プリセット削除" : "Delete preset";
+
     int idx = ui->presetCombo->currentIndex();
     if (idx <= 0) {
-        QMessageBox::information(this, tr("プリセット削除"),
-                                 tr("削除するプリセットを選択してください。"));
+        QMessageBox::information(this, delTitle,
+            ja ? "削除するプリセットを選択してください。"
+               : "Select a preset to delete.");
         return;
     }
 
     QString name = ui->presetCombo->currentText();
-    auto ret = QMessageBox::question(this, tr("プリセット削除"),
-                                     tr("プリセット '%1' を削除しますか？").arg(name),
-                                     QMessageBox::Yes | QMessageBox::No);
+    auto ret = QMessageBox::question(this, delTitle,
+        (ja ? QStringLiteral("プリセット '%1' を削除しますか？")
+            : QStringLiteral("Delete preset '%1'?")).arg(name),
+        QMessageBox::Yes | QMessageBox::No);
     if (ret != QMessageBox::Yes) return;
 
     QJsonObject root = loadJson();
@@ -1297,7 +1483,9 @@ void MainWindow::onDeletePreset()
     saveJson(root);
 
     loadPresets();
-    statusBar()->showMessage(tr("プリセット '%1' を削除しました").arg(name), 3000);
+    statusBar()->showMessage(
+        (ja ? QStringLiteral("プリセット '%1' を削除しました")
+            : QStringLiteral("Preset '%1' deleted")).arg(name), 3000);
 }
 
 void MainWindow::onPresetChanged(int index)
@@ -1568,6 +1756,11 @@ void MainWindow::retranslateUi()
     ui->autoAdjustCheck->setText(ja ? "オートアジャスト" : "Auto adjust");
     ui->autoAdjustCheck->setToolTip(ja ? "範囲選択時に近くのラインに自動でスナップします" : "Snap to nearby lines when selecting region");
     ui->captureCursorCheck->setText(ja ? "マウスカーソルをキャプチャ" : "Capture mouse cursor");
+    ui->captureCursorCheck->setToolTip(ja ? "マウスカーソルをキャプチャ" : "Capture mouse cursor");
+    ui->monitorCombo->setToolTip(ja ? "キャプチャするディスプレイ" : "Display to capture");
+    ui->windowCombo->setToolTip(ja ? "キャプチャするウィンドウ" : "Window to capture");
+    ui->refreshWindowsBtn->setToolTip(ja ? "ウィンドウ一覧を更新" : "Refresh window list");
+    ui->selectRegionBtn->setToolTip(ja ? "画面で範囲を選択" : "Click to draw a capture region on screen");
 
     // Video group
     ui->videoGroupBox->setTitle(ja ? "映像設定" : "Video Settings");
@@ -1581,6 +1774,15 @@ void MainWindow::retranslateUi()
     ui->h264LevelLabel->setText(ja ? "レベル:" : "Level:");
     ui->h264LevelCombo->setItemText(0, ja ? "自動" : "Auto");
     ui->hwEncoderCheck->setText(ja ? "ハードウェアエンコーダー (GPU)" : "Hardware encoder (GPU)");
+    ui->hwEncoderCheck->setToolTip(ja ? "利用可能なら GPU エンコードを使う" : "Use GPU hardware encoder when available");
+    ui->videoCodecCombo->setToolTip(ja ? "映像コーデック" : "Video codec");
+    ui->containerCombo->setToolTip(ja ? "コンテナ形式" : "Container format");
+    ui->fpsSpinBox->setToolTip(ja ? "フレームレート" : "Frames per second");
+    ui->videoBitrateSpinBox->setToolTip(ja ? "映像ビットレート (kbps)" : "Video bitrate (kbps)");
+    ui->videoQualitySlider->setToolTip(ja ? "エンコード品質 0–100" : "Encoding quality 0–100");
+    ui->realtimeEncodeCheck->setToolTip(ja ? "リアルタイムエンコード (推奨)" : "Realtime encoding (recommended)");
+    ui->h264ProfileCombo->setToolTip(ja ? "H.264 プロファイル" : "H.264 profile");
+    ui->h264LevelCombo->setToolTip(ja ? "H.264 レベル" : "H.264 level");
 
     // Audio group
     ui->audioGroupBox->setTitle(ja ? "音声設定" : "Audio Settings");
@@ -1595,6 +1797,11 @@ void MainWindow::retranslateUi()
     ui->audioSampleRateLabel->setText(ja ? "サンプリングレート:" : "Sample rate:");
     ui->audioBitDepthLabel->setText(ja ? "ビット深度:" : "Bit depth:");
     ui->vorbisQualityLabel->setText(ja ? "品質:" : "Quality:");
+    ui->outputAudioCombo->setToolTip(ja ? "出力音声 (ループバック) デバイス" : "System audio (loopback) device");
+    ui->inputAudioCombo->setToolTip(ja ? "入力 (マイク) デバイス" : "Microphone / input device");
+    ui->audioCodecCombo->setToolTip(ja ? "音声コーデック" : "Audio codec");
+    ui->audioBitrateSlider->setToolTip(ja ? "音声ビットレート (kbps)" : "Audio bitrate (kbps)");
+    ui->vorbisQualitySlider->setToolTip(ja ? "エンコード品質 0–100" : "Encoding quality 0–100");
 
     // Output group
     ui->outputGroupBox->setTitle(ja ? "出力" : "Output");
@@ -1616,6 +1823,21 @@ void MainWindow::retranslateUi()
         ui->pauseBtn->setText(ja ? "一時停止" : "Pause");
     } else {
         ui->pauseBtn->setText(ja ? "再開" : "Resume");
+    }
+    ui->recordBtn->setToolTip(ja ? "録画開始/停止 (Ctrl+R / Ctrl+Shift+R)" : "Start/stop recording (Ctrl+R / Ctrl+Shift+R)");
+    ui->pauseBtn->setToolTip(ja ? "録画を一時停止/再開" : "Pause/resume recording");
+
+    // Open folder button (status bar permanent widget)
+    if (openFolderBtn_) {
+        openFolderBtn_->setText(ja ? "フォルダを開く" : "Open Folder");
+        openFolderBtn_->setToolTip(ja
+            ? "最後に保存したファイルのフォルダを開く"
+            : "Open the folder of the last saved file");
+    }
+
+    // Window title (only set static title here when not recording)
+    if (!isRecording_) {
+        setWindowTitle("pbRecorder");
     }
 }
 

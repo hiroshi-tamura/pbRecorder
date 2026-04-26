@@ -10,6 +10,7 @@
 #include "core/Types.h"
 
 class PeakMeterWidget;
+class QPushButton;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -36,6 +37,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 
 private slots:
     void onCaptureModeChanged(int index);
@@ -68,6 +71,7 @@ private:
     void updateAudioCodecCombo();
     void validateAudioCodec();
     void updateCaptureWidgetVisibility(int mode);
+    void updateRecordButtonGuard();
     void updateOutputExtension();
     void updateAutoFileName();
     QString generateAutoFileName() const;
@@ -93,6 +97,13 @@ private:
 
 
     QString currentLang_ = "en";
+
+    // Last saved file path (for "Open Folder" button)
+    QString lastSavedPath_;
+    QPushButton* openFolderBtn_ = nullptr;
+
+    // Global hotkey state
+    bool hotkeyRegistered_ = false;
 
     std::unique_ptr<Ui::MainWindow> ui;
 

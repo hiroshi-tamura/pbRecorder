@@ -81,10 +81,21 @@ protected:
             p.setPen(QColor(180, 180, 180));
             p.drawLine(x, meterY, x, meterH - 1);
 
-            // Label below
+            // Label below: clamp end ticks so labels stay within widget bounds
             p.setPen(QColor(160, 160, 160));
-            QRect textRect(x - 16, tickY, 32, tickH);
-            p.drawText(textRect, Qt::AlignCenter, t.label);
+            QRect textRect;
+            int alignFlags;
+            if (t.db >= maxDb_ - 0.1f) {
+                textRect = QRect(x - 30, tickY, 30, tickH);
+                alignFlags = Qt::AlignRight | Qt::AlignVCenter;
+            } else if (t.db <= minDb_ + 0.1f || x < 16) {
+                textRect = QRect(x, tickY, 30, tickH);
+                alignFlags = Qt::AlignLeft | Qt::AlignVCenter;
+            } else {
+                textRect = QRect(x - 16, tickY, 32, tickH);
+                alignFlags = Qt::AlignCenter;
+            }
+            p.drawText(textRect, alignFlags, t.label);
         }
     }
 

@@ -39,7 +39,11 @@ int main(int argc, char* argv[]) {
     app.setStyleSheet(
         "QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }"
         "QGroupBox { border: 1px solid #555; border-radius: 4px; margin-top: 1em; padding-top: 0.5em; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #c0c0c0; font-weight: 600; font-size: 13px; }"
+        "QSpinBox, QComboBox, QLineEdit { min-height: 24px; padding: 2px 6px; }"
+        "QPushButton { min-height: 26px; padding: 4px 12px; }"
+        "QPushButton#overwritePresetBtn, QPushButton#saveAsPresetBtn, QPushButton#deletePresetBtn, QPushButton#settingsBtn { font-family: 'Segoe MDL2 Assets'; font-size: 16px; padding: 0; min-width: 32px; min-height: 28px; }"
+        "QStatusBar { color: #cccccc; }"
     );
 
     // Set application icon

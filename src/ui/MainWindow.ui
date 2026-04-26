@@ -64,7 +64,7 @@
          <string/>
         </property>
         <property name="toolTip">
-         <string>上書き保存</string>
+         <string>Overwrite current preset</string>
         </property>
        </widget>
       </item>
@@ -74,7 +74,7 @@
          <string/>
         </property>
         <property name="toolTip">
-         <string>名前をつけて保存</string>
+         <string>Save as new preset…</string>
         </property>
        </widget>
       </item>
@@ -84,7 +84,7 @@
          <string/>
         </property>
         <property name="toolTip">
-         <string>プリセットを削除</string>
+         <string>Delete current preset</string>
         </property>
        </widget>
       </item>
@@ -149,7 +149,11 @@
         </widget>
        </item>
        <item row="1" column="1" colspan="2">
-        <widget class="QComboBox" name="monitorCombo"/>
+        <widget class="QComboBox" name="monitorCombo">
+         <property name="toolTip">
+          <string>Display to capture</string>
+         </property>
+        </widget>
        </item>
        <item row="2" column="0">
         <widget class="QLabel" name="windowLabel">
@@ -166,6 +170,9 @@
            <verstretch>0</verstretch>
           </sizepolicy>
          </property>
+         <property name="toolTip">
+          <string>Window to capture</string>
+         </property>
         </widget>
        </item>
        <item row="2" column="2">
@@ -178,6 +185,9 @@
            <width>80</width>
            <height>16777215</height>
           </size>
+         </property>
+         <property name="toolTip">
+          <string>Refresh window list</string>
          </property>
         </widget>
        </item>
@@ -203,6 +213,9 @@
          <property name="text">
           <string>範囲選択</string>
          </property>
+         <property name="toolTip">
+          <string>Click to draw a capture region on screen</string>
+         </property>
         </widget>
        </item>
        <item row="4" column="1" colspan="2">
@@ -211,7 +224,7 @@
           <string>オートアジャスト</string>
          </property>
          <property name="toolTip">
-          <string>範囲選択時に近くのラインに自動でスナップします</string>
+          <string>Snap region to detected window edges</string>
          </property>
         </widget>
        </item>
@@ -222,6 +235,9 @@
          </property>
          <property name="checked">
           <bool>true</bool>
+         </property>
+         <property name="toolTip">
+          <string>Capture mouse cursor</string>
          </property>
         </widget>
        </item>
@@ -252,6 +268,9 @@
          </item>
          <item row="0" column="1" colspan="2">
           <widget class="QComboBox" name="videoCodecCombo">
+           <property name="toolTip">
+            <string>Video codec</string>
+           </property>
            <item>
             <property name="text">
              <string>H.264</string>
@@ -272,7 +291,11 @@
           </widget>
          </item>
          <item row="1" column="1" colspan="2">
-          <widget class="QComboBox" name="containerCombo"/>
+          <widget class="QComboBox" name="containerCombo">
+           <property name="toolTip">
+            <string>Container format</string>
+           </property>
+          </widget>
          </item>
          <item row="2" column="0">
           <widget class="QLabel" name="fpsLabel">
@@ -291,6 +314,9 @@
            </property>
            <property name="value">
             <number>60</number>
+           </property>
+           <property name="toolTip">
+            <string>Frames per second</string>
            </property>
           </widget>
          </item>
@@ -340,6 +366,9 @@
            <property name="singleStep">
             <number>500</number>
            </property>
+           <property name="toolTip">
+            <string>Video bitrate (kbps)</string>
+           </property>
           </widget>
          </item>
          <item row="4" column="0">
@@ -349,7 +378,7 @@
            </property>
           </widget>
          </item>
-         <item row="4" column="1" colspan="2">
+         <item row="4" column="1">
           <widget class="QSlider" name="videoQualitySlider">
            <property name="orientation">
             <enum>Qt::Horizontal</enum>
@@ -363,6 +392,25 @@
            <property name="value">
             <number>70</number>
            </property>
+           <property name="toolTip">
+            <string>Encoding quality 0–100</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="2">
+          <widget class="QLabel" name="qualityValueLabel">
+           <property name="text">
+            <string>70 %</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignRight|Qt::AlignVCenter</set>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>48</width>
+             <height>0</height>
+            </size>
+           </property>
           </widget>
          </item>
          <item row="5" column="0" colspan="3">
@@ -372,6 +420,9 @@
            </property>
            <property name="checked">
             <bool>true</bool>
+           </property>
+           <property name="toolTip">
+            <string>Realtime encoding (recommended)</string>
            </property>
           </widget>
          </item>
@@ -384,6 +435,9 @@
          </item>
          <item row="6" column="1" colspan="2">
           <widget class="QComboBox" name="h264ProfileCombo">
+           <property name="toolTip">
+            <string>H.264 profile</string>
+           </property>
            <item>
             <property name="text">
              <string>Baseline</string>
@@ -410,6 +464,9 @@
          </item>
          <item row="7" column="1" colspan="2">
           <widget class="QComboBox" name="h264LevelCombo">
+           <property name="toolTip">
+            <string>H.264 level</string>
+           </property>
            <item>
             <property name="text">
              <string>自動</string>
@@ -450,6 +507,9 @@
            <property name="checked">
             <bool>true</bool>
            </property>
+           <property name="toolTip">
+            <string>Use GPU hardware encoder when available</string>
+           </property>
           </widget>
          </item>
         </layout>
@@ -472,7 +532,11 @@
           </widget>
          </item>
          <item row="0" column="1" colspan="2">
-          <widget class="QComboBox" name="outputAudioCombo"/>
+          <widget class="QComboBox" name="outputAudioCombo">
+           <property name="toolTip">
+            <string>System audio (loopback) device</string>
+           </property>
+          </widget>
          </item>
          <!-- row 1: output peak meter (added programmatically) -->
          <!-- row 2: Output ASIO channel -->
@@ -536,7 +600,11 @@
           </widget>
          </item>
          <item row="3" column="1" colspan="2">
-          <widget class="QComboBox" name="inputAudioCombo"/>
+          <widget class="QComboBox" name="inputAudioCombo">
+           <property name="toolTip">
+            <string>Microphone / input device</string>
+           </property>
+          </widget>
          </item>
          <!-- row 4: input peak meter (added programmatically) -->
          <!-- row 5: Input ASIO channel -->
@@ -600,7 +668,11 @@
           </widget>
          </item>
          <item row="6" column="1" colspan="2">
-          <widget class="QComboBox" name="audioCodecCombo"/>
+          <widget class="QComboBox" name="audioCodecCombo">
+           <property name="toolTip">
+            <string>Audio codec</string>
+           </property>
+          </widget>
          </item>
          <!-- row 7: Bitrate (for AAC/MP3/WMA/Opus) -->
          <item row="7" column="0">
@@ -629,6 +701,9 @@
            </property>
            <property name="pageStep">
             <number>64</number>
+           </property>
+           <property name="toolTip">
+            <string>Audio bitrate (kbps)</string>
            </property>
           </widget>
          </item>
@@ -789,13 +864,13 @@
        <item row="1" column="2">
         <widget class="QCheckBox" name="autoFileNameCheck">
          <property name="text">
-          <string>自動</string>
+          <string>Auto-name</string>
          </property>
          <property name="checked">
           <bool>true</bool>
          </property>
          <property name="toolTip">
-          <string>録画開始時に日時と設定からファイル名を自動生成します</string>
+          <string>Generate filename automatically with timestamp + codec info</string>
          </property>
         </widget>
        </item>
@@ -831,6 +906,9 @@
 QPushButton:hover { background-color: #ee4444; }
 QPushButton:disabled { background-color: #888888; }</string>
         </property>
+        <property name="toolTip">
+         <string>Start/stop recording (Ctrl+R)</string>
+        </property>
        </widget>
       </item>
       <item>
@@ -846,6 +924,9 @@ QPushButton:disabled { background-color: #888888; }</string>
           <width>80</width>
           <height>48</height>
          </size>
+        </property>
+        <property name="toolTip">
+         <string>Pause/resume recording</string>
         </property>
        </widget>
       </item>
