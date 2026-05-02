@@ -443,16 +443,7 @@ bool MkvPipeline::remuxToMkv() {
 
     bool success = false;
 
-    // Debug log file
-    std::string logPath;
-    {
-        const std::wstring& wp = config_.outputPath;
-        int n = WideCharToMultiByte(CP_UTF8, 0, wp.c_str(), (int)wp.size(), nullptr, 0, nullptr, nullptr);
-        logPath.resize(n);
-        WideCharToMultiByte(CP_UTF8, 0, wp.c_str(), (int)wp.size(), &logPath[0], n, nullptr, nullptr);
-        logPath += ".remux.log";
-    }
-    FILE* logFile = fopen(logPath.c_str(), "w");
+    FILE* logFile = nullptr;
     auto logMsg = [&](const char* fmt, ...) {
         if (!logFile) return;
         va_list args;

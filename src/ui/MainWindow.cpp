@@ -29,6 +29,7 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QStatusBar>
+#include <QRegularExpression>
 #include <windows.h>
 
 #include "SettingsDialog.h"
@@ -40,6 +41,64 @@
 // MinGW's endpointvolume.h only forward-declares IAudioMeterInformation.
 // Define the COM interface manually.
 #include <endpointvolume.h>
+
+namespace {
+
+UINT nativeHotkeyModifiers(const QKeyCombination& combo)
+{
+    UINT modifiers = MOD_NOREPEAT;
+    const Qt::KeyboardModifiers qtMods = combo.keyboardModifiers();
+    if (qtMods.testFlag(Qt::ControlModifier)) modifiers |= MOD_CONTROL;
+    if (qtMods.testFlag(Qt::ShiftModifier)) modifiers |= MOD_SHIFT;
+    if (qtMods.testFlag(Qt::AltModifier)) modifiers |= MOD_ALT;
+    if (qtMods.testFlag(Qt::MetaModifier)) modifiers |= MOD_WIN;
+    return modifiers;
+}
+
+UINT nativeHotkeyKey(Qt::Key key)
+{
+    const int value = static_cast<int>(key);
+    if ((value >= Qt::Key_A && value <= Qt::Key_Z) ||
+        (value >= Qt::Key_0 && value <= Qt::Key_9)) {
+        return static_cast<UINT>(value);
+    }
+
+    if (value >= Qt::Key_F1 && value <= Qt::Key_F24) {
+        return VK_F1 + static_cast<UINT>(value - Qt::Key_F1);
+    }
+
+    switch (key) {
+    case Qt::Key_Backspace: return VK_BACK;
+    case Qt::Key_Tab: return VK_TAB;
+    case Qt::Key_Return:
+    case Qt::Key_Enter: return VK_RETURN;
+    case Qt::Key_Escape: return VK_ESCAPE;
+    case Qt::Key_Space: return VK_SPACE;
+    case Qt::Key_PageUp: return VK_PRIOR;
+    case Qt::Key_PageDown: return VK_NEXT;
+    case Qt::Key_End: return VK_END;
+    case Qt::Key_Home: return VK_HOME;
+    case Qt::Key_Left: return VK_LEFT;
+    case Qt::Key_Up: return VK_UP;
+    case Qt::Key_Right: return VK_RIGHT;
+    case Qt::Key_Down: return VK_DOWN;
+    case Qt::Key_Insert: return VK_INSERT;
+    case Qt::Key_Delete: return VK_DELETE;
+    default: return 0;
+    }
+}
+
+QString safeFileNameComponent(QString text)
+{
+    text.replace(QRegularExpression(QStringLiteral(R"([<>:"/\\|?*\x00-\x1F])")), "_");
+    text = text.trimmed();
+    while (text.endsWith('.') || text.endsWith(' ')) {
+        text.chop(1);
+    }
+    return text.isEmpty() ? QStringLiteral("recording") : text;
+}
+
+} // namespace
 
 #ifndef __IAudioMeterInformation_INTERFACE_DEFINED__
 #define __IAudioMeterInformation_INTERFACE_DEFINED__
@@ -225,10 +284,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    if (hotkeyRegistered_) {
-        UnregisterHotKey(reinterpret_cast<HWND>(winId()), 1);
-        hotkeyRegistered_ = false;
-    }
+    unregisterGlobalHotkey();
 }
 
 // ============================================================================
@@ -238,13 +294,8 @@ MainWindow::~MainWindow()
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
-    // Register Ctrl+Shift+R global hotkey on first show (winId() must be valid)
-    if (!hotkeyRegistered_) {
-        if (RegisterHotKey(reinterpret_cast<HWND>(winId()), 1,
-                           MOD_CONTROL | MOD_SHIFT, 'R')) {
-            hotkeyRegistered_ = true;
-        }
-    }
+    // Register the global hotkey on first show (winId() must be valid).
+    registerGlobalHotkey();
 }
 
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
@@ -252,7 +303,9 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
     if (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG") {
         MSG *msg = static_cast<MSG *>(message);
         if (msg && msg->message == WM_HOTKEY && msg->wParam == 1) {
-            onRecord();
+            if (isRecording_ || ui->recordBtn->isEnabled()) {
+                onRecord();
+            }
             if (result) *result = 0;
             return true;
         }
@@ -336,6 +389,8 @@ void MainWindow::setupConnections()
     connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, updateAsioOutVisibility);
     connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this]() { enforceSingleAudioSource(ui->outputAudioCombo); });
+    connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::validateAudioCodec);
     connect(ui->asioOutStartChSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &MainWindow::validateAudioCodec);
@@ -343,6 +398,8 @@ void MainWindow::setupConnections()
             this, &MainWindow::validateAudioCodec);
     connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, updateAsioInVisibility);
+    connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this]() { enforceSingleAudioSource(ui->inputAudioCombo); });
     connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::validateAudioCodec);
     connect(ui->asioStartChSpin, QOverload<int>::of(&QSpinBox::valueChanged),
@@ -477,9 +534,32 @@ void MainWindow::updateRecordButtonGuard()
         ui->recordBtn->setEnabled(false);
         statusBar()->showMessage(
             ja ? "範囲を選択してください" : "Please select a region first");
+    } else if (!audioCodecCompatible_) {
+        ui->recordBtn->setEnabled(false);
     } else {
         ui->recordBtn->setEnabled(true);
     }
+}
+
+void MainWindow::registerGlobalHotkey()
+{
+    if (hotkeyRegistered_ || recordHotkey_.isEmpty()) return;
+
+    const QKeyCombination combo = recordHotkey_[0];
+    const UINT modifiers = nativeHotkeyModifiers(combo);
+    const UINT key = nativeHotkeyKey(combo.key());
+    if (key == 0) return;
+
+    if (RegisterHotKey(reinterpret_cast<HWND>(winId()), 1, modifiers, key)) {
+        hotkeyRegistered_ = true;
+    }
+}
+
+void MainWindow::unregisterGlobalHotkey()
+{
+    if (!hotkeyRegistered_) return;
+    UnregisterHotKey(reinterpret_cast<HWND>(winId()), 1);
+    hotkeyRegistered_ = false;
 }
 
 // ============================================================================
@@ -604,6 +684,7 @@ void MainWindow::validateAudioCodec()
     }
 
     bool incompatible = (maxCodecChannels > 0 && maxUsedChannels > maxCodecChannels);
+    audioCodecCompatible_ = !incompatible;
 
     const bool ja = (currentLang_ == "ja");
     if (incompatible) {
@@ -620,12 +701,12 @@ void MainWindow::validateAudioCodec()
                 .arg(maxUsedChannels));
     } else {
         ui->audioCodecCombo->setStyleSheet("");
-        ui->audioCodecCombo->setToolTip("");
+        ui->audioCodecCombo->setToolTip(ja ? "音声コーデック" : "Audio codec");
     }
 
     // Disable Record button when codec is incompatible
     if (!isRecording_) {
-        ui->recordBtn->setEnabled(!incompatible);
+        updateRecordButtonGuard();
         if (incompatible) {
             statusBar()->showMessage(
                 (ja ? QStringLiteral("録音不可: %1 は %2ch に対応していません")
@@ -634,6 +715,28 @@ void MainWindow::validateAudioCodec()
                     .arg(maxUsedChannels));
         }
     }
+}
+
+void MainWindow::enforceSingleAudioSource(QObject *changedCombo)
+{
+    if (ui->outputAudioCombo->currentIndex() <= 0 ||
+        ui->inputAudioCombo->currentIndex() <= 0) {
+        return;
+    }
+
+    const bool ja = (currentLang_ == "ja");
+    if (changedCombo == ui->outputAudioCombo) {
+        ui->inputAudioCombo->setCurrentIndex(0);
+    } else {
+        ui->outputAudioCombo->setCurrentIndex(0);
+    }
+
+    rebuildMeteringSessions();
+    validateAudioCodec();
+    statusBar()->showMessage(
+        ja ? "現在は出力音声と入力音声の同時録音には対応していません"
+           : "System audio and microphone cannot be recorded together yet",
+        5000);
 }
 
 void MainWindow::updateOutputExtension()
@@ -676,7 +779,8 @@ void MainWindow::updateAutoFileName()
 
 QString MainWindow::generateAutoFileName() const
 {
-    QString dateTime = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
+    QString dateTime = QDateTime::currentDateTime().toString(autoNameFormat_);
+    dateTime = safeFileNameComponent(dateTime);
 
     // Video codec name
     QString videoCodec;
@@ -733,6 +837,7 @@ void MainWindow::onVideoBitrateSliderChanged(int value)
     ui->videoBitrateSpinBox->blockSignals(true);
     ui->videoBitrateSpinBox->setValue(value);
     ui->videoBitrateSpinBox->blockSignals(false);
+    updateAutoFileName();
 }
 
 void MainWindow::onVideoBitrateSpinBoxChanged(int value)
@@ -747,6 +852,7 @@ void MainWindow::onAudioBitrateSliderChanged(int value)
     ui->audioBitrateSpinBox->blockSignals(true);
     ui->audioBitrateSpinBox->setValue(value);
     ui->audioBitrateSpinBox->blockSignals(false);
+    updateAutoFileName();
 }
 
 void MainWindow::onAudioBitrateSpinBoxChanged(int value)
@@ -913,6 +1019,7 @@ void MainWindow::onRefreshWindows()
 void MainWindow::onSelectRegion()
 {
     auto *selector = new RegionSelectorWidget();
+    selector->setLanguage(currentLang_);
     selector->setAutoAdjust(ui->autoAdjustCheck->isChecked());
     if (regionSelected_) {
         selector->setInitialRegion(
@@ -923,8 +1030,7 @@ void MainWindow::onSelectRegion()
             this, [this](int x, int y, int w, int h) {
         selectedRegion_ = {x, y, w, h};
         regionSelected_ = true;
-        ui->regionInfoLabel->setText(
-            QString("%1,%2  %3x%4").arg(x).arg(y).arg(w).arg(h));
+        ui->regionInfoLabel->setText(formatRegionInfo(x, y, w, h));
         ui->regionInfoLabel->setStyleSheet("");
         const bool ja = (currentLang_ == "ja");
         statusBar()->showMessage(
@@ -1235,6 +1341,7 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
         config.capture.region = selectedRegion_;
     }
     config.capture.captureCursor = ui->captureCursorCheck->isChecked();
+    config.capture.targetFps = ui->fpsSpinBox->value();
 
     // Video
     config.video.codec = (ui->videoCodecCombo->currentIndex() == 0)
@@ -1309,6 +1416,9 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
     }
 
     config.recordAudio = config.useOutputAudio || config.useInputAudio;
+    if (config.useOutputAudio && config.useInputAudio) {
+        config.useInputAudio = false;
+    }
 
     // Output
     config.outputPath = getOutputFilePath().toStdWString();
@@ -1341,6 +1451,11 @@ QString MainWindow::formatFileSize(int64_t bytes) const
     if (bytes < 1024LL * 1024 * 1024)
         return QString("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
     return QString("%1 GB").arg(bytes / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
+}
+
+QString MainWindow::formatRegionInfo(int x, int y, int w, int h) const
+{
+    return QString("%1x%2 @ (%3,%4)").arg(w).arg(h).arg(x).arg(y);
 }
 
 // ============================================================================
@@ -1587,6 +1702,8 @@ void MainWindow::saveSettings()
     s["asioEndCh"] = ui->asioEndChSpin->value();
     s["outputDir"] = ui->outputDirEdit->text();
     s["autoFileName"] = ui->autoFileNameCheck->isChecked();
+    s["autoNameFormat"] = autoNameFormat_;
+    s["recordHotkey"] = recordHotkey_.toString(QKeySequence::PortableText);
     if (!ui->autoFileNameCheck->isChecked()) {
         s["outputFileName"] = ui->outputFileEdit->text();
     }
@@ -1628,10 +1745,11 @@ void MainWindow::loadSettings()
         selectedRegion_.y = s["regionY"].toInt();
         selectedRegion_.width = s["regionW"].toInt(800);
         selectedRegion_.height = s["regionH"].toInt(600);
-        ui->regionInfoLabel->setText(
-            QString("%1x%2 @ (%3,%4)")
-                .arg(selectedRegion_.width).arg(selectedRegion_.height)
-                .arg(selectedRegion_.x).arg(selectedRegion_.y));
+        ui->regionInfoLabel->setText(formatRegionInfo(
+            selectedRegion_.x,
+            selectedRegion_.y,
+            selectedRegion_.width,
+            selectedRegion_.height));
         ui->regionInfoLabel->setStyleSheet("");
     }
 
@@ -1696,6 +1814,20 @@ void MainWindow::loadSettings()
     if (s.contains("autoFileName"))
         ui->autoFileNameCheck->setChecked(s["autoFileName"].toBool());
 
+    if (s.contains("autoNameFormat")) {
+        const QString fmt = s["autoNameFormat"].toString().trimmed();
+        if (!fmt.isEmpty()) {
+            autoNameFormat_ = fmt;
+        }
+    }
+
+    if (s.contains("recordHotkey")) {
+        const QKeySequence seq(s["recordHotkey"].toString());
+        if (!seq.isEmpty()) {
+            recordHotkey_ = seq;
+        }
+    }
+
     if (!ui->autoFileNameCheck->isChecked() && s.contains("outputFileName")) {
         ui->outputFileEdit->setText(s["outputFileName"].toString());
     } else {
@@ -1717,11 +1849,41 @@ void MainWindow::loadSettings()
 void MainWindow::onSettingsTriggered()
 {
     SettingsDialog dlg(currentLang_, this);
+    dlg.setRecordHotkey(recordHotkey_);
+    dlg.setDefaultOutputDir(ui->outputDirEdit->text());
+    dlg.setAutoNameFormat(autoNameFormat_);
+
     if (dlg.exec() == QDialog::Accepted) {
-        QString lang = dlg.selectedLanguage();
+        bool changed = false;
+        const QString lang = dlg.selectedLanguage();
         if (lang != currentLang_) {
             currentLang_ = lang;
             retranslateUi();
+            changed = true;
+        }
+
+        const QString outputDir = dlg.defaultOutputDir().trimmed();
+        if (!outputDir.isEmpty() && outputDir != ui->outputDirEdit->text()) {
+            ui->outputDirEdit->setText(QDir::toNativeSeparators(outputDir));
+            changed = true;
+        }
+
+        const QString autoNameFormat = dlg.autoNameFormat().trimmed();
+        if (!autoNameFormat.isEmpty() && autoNameFormat != autoNameFormat_) {
+            autoNameFormat_ = autoNameFormat;
+            updateAutoFileName();
+            changed = true;
+        }
+
+        const QKeySequence hotkey = dlg.recordHotkey();
+        if (!hotkey.isEmpty() && hotkey != recordHotkey_) {
+            unregisterGlobalHotkey();
+            recordHotkey_ = hotkey;
+            registerGlobalHotkey();
+            changed = true;
+        }
+
+        if (changed) {
             saveSettings();
         }
     }
@@ -1760,7 +1922,9 @@ void MainWindow::retranslateUi()
     ui->monitorCombo->setToolTip(ja ? "キャプチャするディスプレイ" : "Display to capture");
     ui->windowCombo->setToolTip(ja ? "キャプチャするウィンドウ" : "Window to capture");
     ui->refreshWindowsBtn->setToolTip(ja ? "ウィンドウ一覧を更新" : "Refresh window list");
-    ui->selectRegionBtn->setToolTip(ja ? "画面で範囲を選択" : "Click to draw a capture region on screen");
+    ui->selectRegionBtn->setToolTip(ja
+        ? "画面で範囲を選択し、Enterキーで確定"
+        : "Draw a capture region, then press Enter to confirm");
 
     // Video group
     ui->videoGroupBox->setTitle(ja ? "映像設定" : "Video Settings");
@@ -1824,7 +1988,10 @@ void MainWindow::retranslateUi()
     } else {
         ui->pauseBtn->setText(ja ? "再開" : "Resume");
     }
-    ui->recordBtn->setToolTip(ja ? "録画開始/停止 (Ctrl+R / Ctrl+Shift+R)" : "Start/stop recording (Ctrl+R / Ctrl+Shift+R)");
+    const QString hotkeyText = recordHotkey_.toString(QKeySequence::NativeText);
+    ui->recordBtn->setToolTip(
+        (ja ? QStringLiteral("録画開始/停止 (Ctrl+R / %1)")
+            : QStringLiteral("Start/stop recording (Ctrl+R / %1)")).arg(hotkeyText));
     ui->pauseBtn->setToolTip(ja ? "録画を一時停止/再開" : "Pause/resume recording");
 
     // Open folder button (status bar permanent widget)

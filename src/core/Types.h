@@ -118,6 +118,7 @@ struct CaptureConfig {
     HWND targetWindow = nullptr;
     RegionRect region = {};
     bool captureCursor = true;
+    int targetFps = 60;
 };
 
 struct RecordingConfig {
@@ -164,6 +165,17 @@ public:
     void push(T item) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            queue_.push(std::move(item));
+        }
+        cv_.notify_one();
+    }
+
+    void pushBounded(T item, size_t maxSize) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            while (maxSize > 0 && queue_.size() >= maxSize) {
+                queue_.pop();
+            }
             queue_.push(std::move(item));
         }
         cv_.notify_one();

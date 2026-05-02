@@ -1,4 +1,5 @@
 build/
+build*/
 release/
 debug_capture.log
 .serena/
@@ -8,9 +9,15 @@ debug_capture.log
 
 # Local-only working files (may contain paths/personal info — never push)
 HANDOVER.md
+HANDOVER.md.*
+HANDOVER.md.bak
+pbTermLog.txt
 Log
 Log/
 *.log
 screenshots/
 reports/
 pbRecorder-*.zip
+
+# Optional local SDKs. Do not commit proprietary vendor SDK payloads.
+third_party/asiosdk/

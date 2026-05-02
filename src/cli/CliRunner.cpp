@@ -525,6 +525,12 @@ int CliRunner::run(const QStringList& args) {
             config.recordAudio = true;
         }
 
+        if (config.useOutputAudio && config.useInputAudio) {
+            err() << "Error: recording system audio and microphone together is not supported yet. "
+                  << "Specify only one of --audio-out or --audio-in." << Qt::endl;
+            return 1;
+        }
+
         // ASIO channel range
         if (!asioChannels.isEmpty()) {
             QStringList parts = asioChannels.split('-');

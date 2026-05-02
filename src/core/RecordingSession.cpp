@@ -57,6 +57,10 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
 
     // Create audio sources
     if (config_.recordAudio) {
+        if (config_.useOutputAudio && config_.useInputAudio) {
+            config_.useInputAudio = false;
+        }
+
         // Check if both output and input use the same ASIO driver
         // ASIO SDK is a singleton — only one driver instance allowed at a time
         bool outputIsAsio = config_.useOutputAudio &&
@@ -303,7 +307,9 @@ void RecordingSession::onVideoFrame(const VideoFrame& frame) {
         adjusted.timestamp -= pauseOffset_;
     }
 
-    videoQueue_.push(std::move(adjusted));
+    const size_t maxQueuedFrames = static_cast<size_t>(
+        std::clamp(config_.video.fps * 2, 5, 240));
+    videoQueue_.pushBounded(std::move(adjusted), maxQueuedFrames);
 }
 
 void RecordingSession::onAudioBuffer(const AudioBuffer& buffer) {
@@ -315,7 +321,7 @@ void RecordingSession::onAudioBuffer(const AudioBuffer& buffer) {
         adjusted.timestamp -= pauseOffset_;
     }
 
-    audioQueue_.push(std::move(adjusted));
+    audioQueue_.pushBounded(std::move(adjusted), 600);
 }
 
 void RecordingSession::onError(const std::string& error) {

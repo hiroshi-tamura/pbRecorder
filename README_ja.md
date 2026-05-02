@@ -26,8 +26,8 @@ Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Dup
 - **マウスカーソル**: 表示/非表示切り替え可能
 
 ### 音声
-- **WASAPI**: システム音声（ループバック）とマイク入力の同時録音
-- **ASIO**: 低レイテンシのASIOデバイス対応（ASIO SDKが必要）
+- **WASAPI**: システム音声（ループバック）またはマイク入力
+- **ASIO**: 任意の低レイテンシASIOデバイス対応（ASIO SDKは別途入手）
 - **コーデック**: AAC, MP3, Opus, Vorbis, PCM, WMA
 
 ### コンテナ形式
@@ -120,8 +120,11 @@ pbRecorder-cli --cli --vcodec h264 --container mkv -o out.mkv
 ### 音声設定
 
 ```bash
-# システム音声 + マイク
-pbRecorder-cli --cli --audio-out 0 --audio-in 0 --acodec aac --abitrate 192 -o out.mp4
+# システム音声
+pbRecorder-cli --cli --audio-out 0 --acodec aac --abitrate 192 -o out.mp4
+
+# マイク
+pbRecorder-cli --cli --audio-in 0 --acodec aac --abitrate 192 -o mic.mp4
 
 # 音声なし
 pbRecorder-cli --cli --no-audio -o out.mp4
@@ -143,7 +146,7 @@ pbRecorder-cli --cli --container mkv --acodec pcm --sample-rate 96000 --bit-dept
 - CMake 3.24以上
 - Qt 6.9以上
 - MinGW-w64 または MSVC
-- （任意）ASIO SDK — `third_party/asiosdk/` に配置
+- （任意）ASIO SDK — Steinberg から別途入手してください。このリポジトリには同梱しません
 
 ### ビルド手順
 
@@ -152,6 +155,14 @@ mkdir build && cd build
 cmake .. -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH="<Qt6のパス>"
 cmake --build . --config Release -- -j4
 ```
+
+ASIO を有効化する場合は、リポジトリ外の SDK パスを指定するか、git で無視される `third_party/asiosdk/` にローカル配置してください。
+
+```bash
+cmake .. -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH="<Qt6のパス>" -DASIO_SDK_DIR="C:/SDKs/asiosdk"
+```
+
+`ASIO_SDK_DIR` に `common/asio.h` がない場合、pbRecorder は ASIO 無効でビルドされます。
 
 以下の2つの実行ファイルが生成されます:
 - `pbRecorder.exe` — GUIアプリケーション（WIN32サブシステム）
@@ -165,7 +176,7 @@ cmake --build . --config Release -- -j4
 - **キャプチャ**: DXGI Desktop Duplication API
 - **エンコード**: Media Foundation (H.264/AAC/MP3/WMV/WMA)
 - **MKVコンテナ**: libmatroska + libebml（ネイティブ実装）
-- **音声キャプチャ**: WASAPI (ループバック/マイク), ASIO
+- **音声キャプチャ**: WASAPI (ループバックまたはマイク), 任意のASIO
 - **音声コーデック**: libopus, libvorbis（MKV用）
 
 ## エンコード・ライセンスについて
@@ -199,10 +210,11 @@ pbRecorderは**特許・ライセンス的にクリーンな構成**を採用し
 | Media Foundation | OS内蔵 | Windows標準 | H.264/AAC/MP3/WMV/WMAエンコード |
 | DXGI | OS内蔵 | Windows標準 | 画面キャプチャ |
 | WASAPI | OS内蔵 | Windows標準 | 音声キャプチャ |
+| Steinberg ASIO SDK | 任意・外部依存 | Steinbergライセンス | ASIOホスト対応。本リポジトリには同梱しません |
 
 - **GPL汚染なし**: GPL/AGPLライセンスのライブラリは使用していません
 - **FFmpeg不使用**: コーデック処理にFFmpegは使っていません
-- すべてのサードパーティライブラリはBSDまたはLGPLであり、商用利用可能です
+- Steinberg ASIO SDK のようなベンダーSDK本体は、公開リポジトリへコミットしない方針です
 
 ## ライセンス
 

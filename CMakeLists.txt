@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.4.0 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.4.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -126,8 +126,9 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(opus)
 
-# ASIO SDK (user must place ASIO SDK in third_party/asiosdk)
-set(ASIO_SDK_DIR "${CMAKE_SOURCE_DIR}/third_party/asiosdk")
+# Optional ASIO SDK. The SDK is not bundled; pass -DASIO_SDK_DIR=... or place
+# a local copy under third_party/asiosdk (ignored by git).
+set(ASIO_SDK_DIR "${CMAKE_SOURCE_DIR}/third_party/asiosdk" CACHE PATH "Path to Steinberg ASIO SDK")
 if(EXISTS "${ASIO_SDK_DIR}/common/asio.h")
     set(ASIO_AVAILABLE ON)
     message(STATUS "ASIO SDK found at ${ASIO_SDK_DIR}")

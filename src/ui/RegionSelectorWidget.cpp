@@ -418,7 +418,9 @@ void RegionSelectorWidget::updateDimensionLabel()
     QRect phys = toPhysicalPixels(sel);
     QString text = QString("%1 x %2").arg(phys.width()).arg(phys.height());
     if (hasSelection_) {
-        text += QString::fromUtf8("\nEnterキーで確定 / Escでキャンセル");
+        text += (currentLang_ == "ja")
+            ? QString::fromUtf8("\nEnterキーで確定 / Escでキャンセル")
+            : QStringLiteral("\nEnter to confirm / Esc to cancel");
     }
     dimensionLabel_->setText(text);
     dimensionLabel_->adjustSize();

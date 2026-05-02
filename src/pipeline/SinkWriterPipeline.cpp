@@ -3,6 +3,7 @@
 #include <dxgi.h>
 #include <stdexcept>
 #include <algorithm>
+#include <cstring>
 
 // Link required libraries
 #pragma comment(lib, "mf.lib")
@@ -174,6 +175,92 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
         // Duration of one frame in 100ns units
         int64_t frameDuration = 10000000LL / config_.video.fps;
 
+        if (writeVideoFrameSurface(frame, relativeTs, frameDuration)) {
+            return true;
+        }
+
+        return writeVideoFrameCpu(frame, relativeTs, frameDuration);
+
+    } catch (const std::exception& e) {
+        reportError(std::string("writeVideoFrame: ") + e.what());
+        return false;
+    }
+}
+
+bool SinkWriterPipeline::writeVideoFrameSurface(const VideoFrame& frame,
+                                                int64_t relativeTs,
+                                                int64_t frameDuration) {
+    if (!frame.texture) return false;
+
+    const uint32_t encWidth = static_cast<uint32_t>(config_.video.width);
+    const uint32_t encHeight = static_cast<uint32_t>(config_.video.height);
+    ID3D11Texture2D* inputTexture = frame.texture.Get();
+    if (frame.width != encWidth || frame.height != encHeight) {
+        if (!d3dDevice_ || !d3dContext_ || !ensureGpuInputTexture(encWidth, encHeight)) {
+            return false;
+        }
+
+        constexpr FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        d3dContext_->ClearRenderTargetView(gpuInputRtv_.Get(), clearColor);
+
+        D3D11_BOX srcBox = {};
+        srcBox.left = 0;
+        srcBox.top = 0;
+        srcBox.right = std::min(frame.width, encWidth);
+        srcBox.bottom = std::min(frame.height, encHeight);
+        srcBox.front = 0;
+        srcBox.back = 1;
+        if (srcBox.right == 0 || srcBox.bottom == 0) {
+            return false;
+        }
+
+        d3dContext_->CopySubresourceRegion(
+            gpuInputTexture_.Get(), 0,
+            0, 0, 0,
+            frame.texture.Get(), 0,
+            &srcBox);
+        inputTexture = gpuInputTexture_.Get();
+    }
+
+    ComPtr<IMFMediaBuffer> mediaBuffer;
+    HRESULT hr = MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D),
+                                           inputTexture,
+                                           0,
+                                           FALSE,
+                                           &mediaBuffer);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    hr = mediaBuffer->SetCurrentLength(encWidth * encHeight * 4);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    ComPtr<IMFSample> sample;
+    hr = MFCreateSample(&sample);
+    if (FAILED(hr)) return false;
+    hr = sample->AddBuffer(mediaBuffer.Get());
+    if (FAILED(hr)) return false;
+    hr = sample->SetSampleTime(relativeTs);
+    if (FAILED(hr)) return false;
+    hr = sample->SetSampleDuration(frameDuration);
+    if (FAILED(hr)) return false;
+
+    {
+        std::lock_guard<std::mutex> lock(writeMutex_);
+        if (!recording_) return false;
+        hr = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+        if (FAILED(hr)) return false;
+    }
+
+    return true;
+}
+
+bool SinkWriterPipeline::writeVideoFrameCpu(const VideoFrame& frame,
+                                            int64_t relativeTs,
+                                            int64_t frameDuration) {
+    try {
         // Encoder dimensions (may be aligned to 16)
         uint32_t encWidth  = static_cast<uint32_t>(config_.video.width);
         uint32_t encHeight = static_cast<uint32_t>(config_.video.height);
@@ -245,7 +332,7 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
         return true;
 
     } catch (const std::exception& e) {
-        reportError(std::string("writeVideoFrame: ") + e.what());
+        reportError(std::string("writeVideoFrameCpu: ") + e.what());
         return false;
     }
 }
@@ -274,6 +361,40 @@ bool SinkWriterPipeline::ensureStagingTexture(uint32_t width, uint32_t height) {
 
     stagingWidth_ = width;
     stagingHeight_ = height;
+    return true;
+}
+
+bool SinkWriterPipeline::ensureGpuInputTexture(uint32_t width, uint32_t height) {
+    if (gpuInputTexture_ && gpuInputWidth_ == width && gpuInputHeight_ == height) {
+        return true;
+    }
+
+    gpuInputTexture_.Reset();
+    gpuInputRtv_.Reset();
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+    HRESULT hr = d3dDevice_->CreateTexture2D(&desc, nullptr, &gpuInputTexture_);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    hr = d3dDevice_->CreateRenderTargetView(gpuInputTexture_.Get(), nullptr, &gpuInputRtv_);
+    if (FAILED(hr)) {
+        gpuInputTexture_.Reset();
+        return false;
+    }
+
+    gpuInputWidth_ = width;
+    gpuInputHeight_ = height;
     return true;
 }
 
@@ -634,7 +755,13 @@ void SinkWriterPipeline::releaseResources() {
     sinkWriter_.Reset();
     dxgiDeviceManager_.Reset();
     stagingTexture_.Reset();
+    gpuInputTexture_.Reset();
+    gpuInputRtv_.Reset();
     d3dContext_.Reset();
+    stagingWidth_ = 0;
+    stagingHeight_ = 0;
+    gpuInputWidth_ = 0;
+    gpuInputHeight_ = 0;
     initialized_ = false;
 }
 

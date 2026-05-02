@@ -105,7 +105,8 @@ uint32_t WindowCapture::getHeight() const { return height_; }
 bool WindowCapture::isCapturing() const { return capturing_.load(); }
 
 void WindowCapture::captureLoop() {
-    const auto frameInterval = std::chrono::microseconds(1000000 / 60);
+    const int targetFps = std::clamp(config_.targetFps, 1, 240);
+    const auto frameInterval = std::chrono::microseconds(1000000 / targetFps);
 
     while (running_.load()) {
         auto frameStart = std::chrono::steady_clock::now();

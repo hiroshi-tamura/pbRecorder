@@ -1,7 +1,9 @@
 #include <QApplication>
 #include <QStyleFactory>
 #include <QDir>
+#include <QFileInfo>
 #include <QIcon>
+#include <QTimer>
 #include <Windows.h>
 #include <shellscalingapi.h>
 
@@ -13,7 +15,7 @@ int main(int argc, char* argv[]) {
 
     QApplication app(argc, argv);
     app.setApplicationName("pbRecorder");
-    app.setApplicationVersion("0.4.0");
+    app.setApplicationVersion("0.4.1");
     app.setOrganizationName("pbRecorder");
 
     app.setStyle(QStyleFactory::create("Fusion"));
@@ -54,6 +56,19 @@ int main(int argc, char* argv[]) {
 
     MainWindow mainWindow;
     mainWindow.show();
+
+    const QStringList args = app.arguments();
+    const int screenshotArg = args.indexOf("--ui-screenshot");
+    if (screenshotArg >= 0) {
+        const QString path = (screenshotArg + 1 < args.size())
+            ? args.at(screenshotArg + 1)
+            : QDir::current().filePath("ui-screenshot.png");
+        QTimer::singleShot(500, &mainWindow, [&mainWindow, path]() {
+            QDir().mkpath(QFileInfo(path).absolutePath());
+            mainWindow.grab().save(path);
+            mainWindow.close();
+        });
+    }
 
     int result = app.exec();
     CoUninitialize();

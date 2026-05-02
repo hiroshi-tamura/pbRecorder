@@ -19,6 +19,7 @@ public:
     ~RegionSelectorWidget() override;
 
     void setAutoAdjust(bool enabled) { autoAdjust_ = enabled; }
+    void setLanguage(const QString& lang) { currentLang_ = lang; }
     void setInitialRegion(int physX, int physY, int physW, int physH);
 
 signals:
@@ -54,6 +55,7 @@ private:
     QPoint currentPos_;
 
     QLabel *dimensionLabel_ = nullptr;
+    QString currentLang_ = "en";
     qreal devicePixelRatio_ = 1.0;
 
     // Auto-adjust state

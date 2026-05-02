@@ -26,8 +26,8 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 - **Mouse cursor**: Toggle capture on/off
 
 ### Audio
-- **WASAPI**: System audio (loopback) and microphone input simultaneously
-- **ASIO**: Low-latency ASIO device support (requires ASIO SDK)
+- **WASAPI**: System audio (loopback) or microphone input
+- **ASIO**: Optional low-latency ASIO device support (requires a separately obtained ASIO SDK)
 - **Codecs**: AAC, MP3, Opus, Vorbis, PCM, WMA
 
 ### Container Formats
@@ -120,8 +120,11 @@ pbRecorder-cli --cli --vcodec h264 --container mkv -o out.mkv
 ### Audio Settings
 
 ```bash
-# System audio + microphone
-pbRecorder-cli --cli --audio-out 0 --audio-in 0 --acodec aac --abitrate 192 -o out.mp4
+# System audio
+pbRecorder-cli --cli --audio-out 0 --acodec aac --abitrate 192 -o out.mp4
+
+# Microphone
+pbRecorder-cli --cli --audio-in 0 --acodec aac --abitrate 192 -o mic.mp4
 
 # No audio
 pbRecorder-cli --cli --no-audio -o out.mp4
@@ -143,7 +146,7 @@ Run `pbRecorder-cli --help` for the complete list of options.
 - CMake 3.24+
 - Qt 6.9+
 - MinGW-w64 or MSVC
-- (Optional) ASIO SDK — place in `third_party/asiosdk/`
+- (Optional) ASIO SDK — obtained separately from Steinberg. It is not bundled in this repository.
 
 ### Build Steps
 
@@ -152,6 +155,14 @@ mkdir build && cd build
 cmake .. -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH="<path-to-Qt6>"
 cmake --build . --config Release -- -j4
 ```
+
+To enable ASIO support, pass an SDK path outside the repository, or place a local copy under the ignored `third_party/asiosdk/` directory:
+
+```bash
+cmake .. -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH="<path-to-Qt6>" -DASIO_SDK_DIR="C:/SDKs/asiosdk"
+```
+
+If `ASIO_SDK_DIR` does not contain `common/asio.h`, pbRecorder builds without ASIO support.
 
 This produces two executables:
 - `pbRecorder.exe` — GUI application (WIN32 subsystem)
@@ -165,7 +176,7 @@ Third-party libraries (libebml, libmatroska, libogg, libvorbis, libopus) are aut
 - **Capture**: DXGI Desktop Duplication API
 - **Encoding**: Media Foundation (H.264/AAC/MP3/WMV/WMA)
 - **MKV container**: libmatroska + libebml (native implementation)
-- **Audio capture**: WASAPI (loopback/mic), ASIO
+- **Audio capture**: WASAPI (loopback or mic), optional ASIO
 - **Audio codecs**: libopus, libvorbis (for MKV)
 
 ## Encoding & Licensing
@@ -199,10 +210,11 @@ pbRecorder uses a **patent and license-clean architecture**.
 | Media Foundation | OS built-in | Windows standard | H.264/AAC/MP3/WMV/WMA encoding |
 | DXGI | OS built-in | Windows standard | Screen capture |
 | WASAPI | OS built-in | Windows standard | Audio capture |
+| Steinberg ASIO SDK | Optional, external | Steinberg license | ASIO host support; not bundled |
 
 - **No GPL contamination**: No GPL/AGPL libraries are used
 - **No FFmpeg**: Codec processing does not use FFmpeg
-- All third-party libraries are BSD or LGPL, suitable for commercial use
+- Vendor SDK payloads such as the Steinberg ASIO SDK are intentionally not committed to this repository
 
 ## License
 

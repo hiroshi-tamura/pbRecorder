@@ -137,9 +137,8 @@ uint32_t DxgiScreenCapture::getHeight() const { return height_; }
 bool DxgiScreenCapture::isCapturing() const { return capturing_.load(); }
 
 void DxgiScreenCapture::captureLoop() {
-    // Calculate frame interval from target FPS (default 60)
-    const int targetFps = (config_.region.width > 0) ? 60 : 60; // overridden externally via video settings
-    const auto frameInterval = std::chrono::microseconds(1000000 / 60);
+    const int targetFps = std::clamp(config_.targetFps, 1, 240);
+    const auto frameInterval = std::chrono::microseconds(1000000 / targetFps);
 
     while (running_.load()) {
         auto frameStart = std::chrono::steady_clock::now();
@@ -210,7 +209,6 @@ bool DxgiScreenCapture::acquireFrame(ComPtr<ID3D11Texture2D>& outTexture,
 
     if (FAILED(hr)) {
         reportError("DxgiScreenCapture: AcquireNextFrame failed: " + hrToString(hr));
-        duplication_->ReleaseFrame();
         return false;
     }
 

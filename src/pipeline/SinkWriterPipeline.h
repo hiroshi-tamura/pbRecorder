@@ -37,6 +37,8 @@ private:
     bool configureAudioInput();
     bool setupDXGIDeviceManager();
     void applyEncoderSettings();
+    bool writeVideoFrameSurface(const VideoFrame& frame, int64_t relativeTs, int64_t frameDuration);
+    bool writeVideoFrameCpu(const VideoFrame& frame, int64_t relativeTs, int64_t frameDuration);
 
     void reportError(const std::string& msg);
     void releaseResources();
@@ -62,10 +64,15 @@ private:
 
     // Staging texture for GPU→CPU copy
     ComPtr<ID3D11Texture2D> stagingTexture_;
+    ComPtr<ID3D11Texture2D> gpuInputTexture_;
+    ComPtr<ID3D11RenderTargetView> gpuInputRtv_;
     ComPtr<ID3D11DeviceContext> d3dContext_;
     uint32_t stagingWidth_ = 0;
     uint32_t stagingHeight_ = 0;
+    uint32_t gpuInputWidth_ = 0;
+    uint32_t gpuInputHeight_ = 0;
     bool ensureStagingTexture(uint32_t width, uint32_t height);
+    bool ensureGpuInputTexture(uint32_t width, uint32_t height);
 
     // Thread safety
     std::mutex writeMutex_;
