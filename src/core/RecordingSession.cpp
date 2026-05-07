@@ -9,9 +9,58 @@
 #include "pipeline/MkvPipeline.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <iterator>
 
 namespace pb {
+
+namespace {
+
+uint32_t nearestSupportedRate(uint32_t requested, const uint32_t* rates, size_t count)
+{
+    if (count == 0 || requested == 0) {
+        return requested;
+    }
+
+    uint32_t best = rates[0];
+    uint32_t bestDelta = requested > best ? requested - best : best - requested;
+    for (size_t i = 1; i < count; ++i) {
+        const uint32_t rate = rates[i];
+        const uint32_t delta = requested > rate ? requested - rate : rate - requested;
+        if (delta < bestDelta) {
+            best = rate;
+            bestDelta = delta;
+        }
+    }
+    return best;
+}
+
+uint32_t supportedSampleRateForCodec(AudioCodec codec, uint32_t requested)
+{
+    if (requested == 0) {
+        requested = 48000;
+    }
+
+    static constexpr uint32_t opusRates[] = {8000, 12000, 16000, 24000, 48000};
+    static constexpr uint32_t mfCommonRates[] = {22050, 32000, 44100, 48000};
+
+    switch (codec) {
+    case AudioCodec::Opus:
+        return nearestSupportedRate(requested, opusRates, std::size(opusRates));
+    case AudioCodec::AAC:
+    case AudioCodec::MP3:
+        return nearestSupportedRate(requested, mfCommonRates, std::size(mfCommonRates));
+    case AudioCodec::WMA:
+        return 48000;
+    case AudioCodec::Vorbis:
+    case AudioCodec::PCM:
+    default:
+        return requested;
+    }
+}
+
+} // namespace
 
 RecordingSession::RecordingSession() = default;
 
@@ -128,22 +177,10 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
             }
             needsChannelMix_ = sourceChannelCount_ != static_cast<uint32_t>(config_.audio.channelCount);
 
-            // Determine target sample rate for the encoder
-            // Opus only supports 8000/12000/16000/24000/48000
-            // AAC supports 44100/48000 etc, Vorbis is flexible
-            uint32_t targetRate = 48000;
-            bool isOpus = (config_.audio.codec == AudioCodec::Opus);
-            if (!isOpus && (sourceSampleRate_ == 44100 || sourceSampleRate_ == 22050)) {
-                targetRate = 44100; // AAC/Vorbis support 44100; keep it
-            }
+            const uint32_t requestedRate = static_cast<uint32_t>(config_.audio.sampleRate);
+            uint32_t targetRate = supportedSampleRateForCodec(config_.audio.codec, requestedRate);
             config_.audio.sampleRate = targetRate;
             needsResample_ = (sourceSampleRate_ != targetRate);
-
-            if (needsResample_) {
-                onError("オーディオリサンプリング: " +
-                        std::to_string(sourceSampleRate_) + " Hz → " +
-                        std::to_string(targetRate) + " Hz");
-            }
         }
     }
 
@@ -445,7 +482,7 @@ AudioBuffer RecordingSession::resampleBuffer(const AudioBuffer& input, uint32_t 
 
     double ratio = static_cast<double>(targetRate) / srcRate;
     uint32_t srcFrames = input.sampleCount;
-    uint32_t dstFrames = static_cast<uint32_t>(srcFrames * ratio);
+    uint32_t dstFrames = static_cast<uint32_t>(std::max(1.0, std::round(srcFrames * ratio)));
     uint32_t channels = input.channelCount;
 
     AudioBuffer output;
@@ -462,7 +499,7 @@ AudioBuffer RecordingSession::resampleBuffer(const AudioBuffer& input, uint32_t 
 
         for (uint32_t i = 0; i < dstFrames; ++i) {
             double srcPos = i / ratio;
-            uint32_t idx = static_cast<uint32_t>(srcPos);
+            uint32_t idx = std::min(static_cast<uint32_t>(srcPos), srcFrames - 1);
             double frac = srcPos - idx;
 
             for (uint32_t ch = 0; ch < channels; ++ch) {
@@ -475,19 +512,19 @@ AudioBuffer RecordingSession::resampleBuffer(const AudioBuffer& input, uint32_t 
         }
     } else if (input.bitsPerSample == 32) {
         output.data.resize(dstFrames * channels * 4);
-        const int32_t* src = reinterpret_cast<const int32_t*>(input.data.data());
-        int32_t* dst = reinterpret_cast<int32_t*>(output.data.data());
+        const float* src = reinterpret_cast<const float*>(input.data.data());
+        float* dst = reinterpret_cast<float*>(output.data.data());
 
         for (uint32_t i = 0; i < dstFrames; ++i) {
             double srcPos = i / ratio;
-            uint32_t idx = static_cast<uint32_t>(srcPos);
+            uint32_t idx = std::min(static_cast<uint32_t>(srcPos), srcFrames - 1);
             double frac = srcPos - idx;
 
             for (uint32_t ch = 0; ch < channels; ++ch) {
-                int32_t s0 = src[idx * channels + ch];
-                int32_t s1 = (idx + 1 < srcFrames)
+                float s0 = src[idx * channels + ch];
+                float s1 = (idx + 1 < srcFrames)
                     ? src[(idx + 1) * channels + ch] : s0;
-                dst[i * channels + ch] = static_cast<int32_t>(
+                dst[i * channels + ch] = static_cast<float>(
                     s0 + frac * (s1 - s0));
             }
         }

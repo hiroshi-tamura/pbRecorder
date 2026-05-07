@@ -388,11 +388,22 @@ bool MkvPipeline::initializeVorbisEncoder() {
                                   config_.audio.sampleRate,
                                   -1, config_.audio.bitrate, -1);
     if (ret != 0) {
-        reportError("vorbis_encode_init failed: " + std::to_string(ret));
         vorbis_info_clear(vorbisInfo_);
-        delete vorbisInfo_;
-        vorbisInfo_ = nullptr;
-        return false;
+        vorbis_info_init(vorbisInfo_);
+
+        const float quality = std::clamp(config_.audio.quality / 100.0f, 0.0f, 1.0f);
+        const int vbrRet = vorbis_encode_init_vbr(vorbisInfo_,
+                                                  config_.audio.channelCount,
+                                                  config_.audio.sampleRate,
+                                                  quality);
+        if (vbrRet != 0) {
+            reportError("vorbis_encode_init failed: " + std::to_string(ret) +
+                        ", vorbis_encode_init_vbr failed: " + std::to_string(vbrRet));
+            vorbis_info_clear(vorbisInfo_);
+            delete vorbisInfo_;
+            vorbisInfo_ = nullptr;
+            return false;
+        }
     }
 
     vorbisComment_ = new vorbis_comment;
