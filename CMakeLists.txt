@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.5.1 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.5.2 LANGUAGES C CXX)
 
 include(CTest)
-set(PBRECORDER_BUILD_TESTING ${BUILD_TESTING})
+option(PBRECORDER_BUILD_TESTING "Build pbRecorder tests" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -317,6 +317,8 @@ qt_generate_deploy_app_script(
 install(SCRIPT ${deploy_script})
 
 if(PBRECORDER_BUILD_TESTING)
+    enable_testing()
+
     add_test(
         NAME cli_help
         COMMAND $<TARGET_FILE:pbRecorder-cli> --help
@@ -340,5 +342,18 @@ if(PBRECORDER_BUILD_TESTING)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${QT_BIN_DIR}"
             TIMEOUT 30
         )
+
+        add_test(
+            NAME runtime_launch_without_dev_path
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/ci/verify-runtime-launch.ps1"
+                -ExePath "$<TARGET_FILE:${PROJECT_NAME}>"
+                -OutputPath "${CMAKE_BINARY_DIR}/runtime-launch-screenshot.png"
+                -TimeoutSeconds 20
+        )
+        set_tests_properties(runtime_launch_without_dev_path PROPERTIES
+            TIMEOUT 30
+        )
+
     endif()
 endif()

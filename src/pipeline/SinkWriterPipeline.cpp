@@ -193,15 +193,13 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
     }
 
     try {
-        // Track timing
-        int64_t ts = frame.timestamp;
-        if (firstVideoTimestamp_.load() < 0) {
-            firstVideoTimestamp_.store(ts);
-        }
-        int64_t relativeTs = ts - firstVideoTimestamp_.load();
+        int64_t relativeTs = frame.timestamp;
         if (relativeTs < 0) relativeTs = 0;
+        if (firstVideoTimestamp_.load() < 0) {
+            firstVideoTimestamp_.store(relativeTs);
+        }
 
-        lastVideoTimestamp_.store(ts);
+        lastVideoTimestamp_.store(relativeTs);
 
         // Duration of one frame in 100ns units
         int64_t frameDuration = 10000000LL / config_.video.fps;
@@ -435,12 +433,11 @@ bool SinkWriterPipeline::writeAudioSamples(const AudioBuffer& buffer) {
     }
 
     try {
-        int64_t ts = buffer.timestamp;
-        if (firstAudioTimestamp_.load() < 0) {
-            firstAudioTimestamp_.store(ts);
-        }
-        int64_t relativeTs = ts - firstAudioTimestamp_.load();
+        int64_t relativeTs = buffer.timestamp;
         if (relativeTs < 0) relativeTs = 0;
+        if (firstAudioTimestamp_.load() < 0) {
+            firstAudioTimestamp_.store(relativeTs);
+        }
 
         // Duration in 100ns units: (sampleCount / sampleRate) * 10,000,000
         int64_t duration = 0;
@@ -816,6 +813,7 @@ void SinkWriterPipeline::applyEncoderSettings() {
     const UINT32 realtime = config_.video.realtimeEncode ? TRUE : FALSE;
     encoderParams->SetUINT32(CODECAPI_AVLowLatencyMode, realtime);
     encoderParams->SetUINT32(CODECAPI_AVEncCommonRealTime, realtime);
+    encoderParams->SetUINT32(CODECAPI_AVEncMPVDefaultBPictureCount, 0);
 
     ComPtr<IMFMediaType> inputType;
     hr = MFCreateMediaType(&inputType);

@@ -8,6 +8,7 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace pb {
@@ -27,6 +28,7 @@ public:
     bool encode(const AudioBuffer& buffer, std::vector<EncodedAudioPacket>& packets);
     bool drain(std::vector<EncodedAudioPacket>& packets);
     void shutdown();
+    const std::string& lastError() const { return lastError_; }
 
 private:
     bool configureOutputType();
@@ -36,7 +38,9 @@ private:
 
     RecordingConfig config_;
     Microsoft::WRL::ComPtr<IMFTransform> encoder_;
+    std::string lastError_;
     int64_t firstTimestamp_ = -1;
+    int64_t nextInputTimestamp_ = -1;
     bool initialized_ = false;
 };
 

@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace pb {
@@ -29,8 +30,10 @@ public:
     bool encodeFrame(const VideoFrame& frame, std::vector<EncodedVideoPacket>& packets);
     bool drain(std::vector<EncodedVideoPacket>& packets);
     void shutdown();
+    const std::string& lastError() const { return lastError_; }
 
 private:
+    bool createEncoder();
     bool configureOutputType();
     bool configureInputType();
     bool ensureStagingTexture(uint32_t width, uint32_t height);
@@ -43,9 +46,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTexture_;
     Microsoft::WRL::ComPtr<IMFTransform> encoder_;
 
+    std::string lastError_;
     uint32_t stagingWidth_ = 0;
     uint32_t stagingHeight_ = 0;
     int64_t firstTimestamp_ = -1;
+    bool mfStarted_ = false;
+    bool comInitialized_ = false;
     bool initialized_ = false;
 };
 

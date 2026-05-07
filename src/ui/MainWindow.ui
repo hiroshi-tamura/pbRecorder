@@ -847,6 +847,19 @@
          </property>
         </widget>
        </item>
+       <item row="0" column="3">
+        <widget class="QPushButton" name="openOutputFolderBtn">
+         <property name="text">
+          <string>開く</string>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>80</width>
+           <height>16777215</height>
+          </size>
+         </property>
+        </widget>
+       </item>
        <item row="1" column="0">
         <widget class="QLabel" name="outputFileLabel">
          <property name="text">

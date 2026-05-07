@@ -38,6 +38,12 @@ using namespace libebml;
 
 namespace pb {
 
+namespace {
+
+constexpr uint64_t MKV_TIMECODE_SCALE_NS = 1000000ULL;
+
+}
+
 // ============================================================================
 // Construction / Destruction
 // ============================================================================
@@ -72,7 +78,10 @@ bool MkvPipeline::initialize(const RecordingConfig& config, ID3D11Device* device
     if (useLiveMuxing()) {
         h264Encoder_ = std::make_unique<H264MftEncoder>();
         if (!h264Encoder_->initialize(config_, device)) {
-            reportError("Failed to initialize Media Foundation H.264 encoder");
+            std::string detail = h264Encoder_->lastError();
+            reportError(detail.empty()
+                            ? "Failed to initialize Media Foundation H.264 encoder"
+                            : "Failed to initialize Media Foundation H.264 encoder: " + detail);
             return false;
         }
     } else {
@@ -194,13 +203,13 @@ bool MkvPipeline::writeAudioSamples(const AudioBuffer& buffer) {
     }
 
     // Encode and mux live.
-    int64_t expected = -1;
-    firstAudioTimestamp_.compare_exchange_strong(expected, buffer.timestamp);
-
-    int64_t relativeTimestamp = buffer.timestamp - firstAudioTimestamp_.load();
+    int64_t relativeTimestamp = buffer.timestamp;
+    if (relativeTimestamp < 0) {
+        relativeTimestamp = 0;
+    }
     int64_t tsMs = toMkvTimestamp(relativeTimestamp);
 
-    std::vector<std::vector<uint8_t>> packets;
+    std::vector<AudioPacket> packets;
 
     {
         std::lock_guard<std::mutex> lock(encodeMutex_);
@@ -208,7 +217,12 @@ bool MkvPipeline::writeAudioSamples(const AudioBuffer& buffer) {
         switch (config_.audio.codec) {
         case AudioCodec::AAC: {
             std::vector<EncodedAudioPacket> aacPackets;
-            if (!aacEncoder_ || !aacEncoder_->encode(buffer, aacPackets)) return false;
+            if (!aacEncoder_ || !aacEncoder_->encode(buffer, aacPackets)) {
+                if (aacEncoder_ && !aacEncoder_->lastError().empty()) {
+                    reportError(aacEncoder_->lastError());
+                }
+                return false;
+            }
             for (auto& packet : aacPackets) {
                 if (!writeAudioPacketLive(std::move(packet.data),
                                           packet.timestampMs,
@@ -225,7 +239,10 @@ bool MkvPipeline::writeAudioSamples(const AudioBuffer& buffer) {
             if (!encodeAudioVorbis(buffer, packets)) return false;
             break;
         case AudioCodec::PCM:
-            packets.emplace_back(buffer.data.begin(), buffer.data.end());
+            packets.push_back({std::vector<uint8_t>(buffer.data.begin(), buffer.data.end()),
+                               tsMs,
+                               static_cast<int64_t>(buffer.sampleCount) * 1000LL /
+                                   static_cast<int64_t>(buffer.sampleRate)});
             break;
         default:
             reportError("Unsupported audio codec for MKV");
@@ -235,12 +252,12 @@ bool MkvPipeline::writeAudioSamples(const AudioBuffer& buffer) {
 
     for (auto& pkt : packets) {
         if (useLiveMuxing()) {
-            if (!writeAudioPacketLive(std::move(pkt), tsMs)) {
+            if (!writeAudioPacketLive(std::move(pkt.data), pkt.timestampMs, pkt.durationMs)) {
                 return false;
             }
         } else {
             std::lock_guard<std::mutex> lock(audioBufferMutex_);
-            bufferedAudioPackets_.push_back({std::move(pkt), tsMs});
+            bufferedAudioPackets_.push_back(std::move(pkt));
         }
     }
 
@@ -371,10 +388,12 @@ bool MkvPipeline::initializeOpusEncoder() {
     opus_encoder_ctl(opusEncoder_, OPUS_SET_BITRATE(config_.audio.bitrate));
     opus_encoder_ctl(opusEncoder_, OPUS_SET_COMPLEXITY(10));
     opus_encoder_ctl(opusEncoder_, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
+    opus_encoder_ctl(opusEncoder_, OPUS_GET_LOOKAHEAD(&opusLookaheadSamples_));
 
     // 20ms frames at configured sample rate
     opusFrameSamples_ = config_.audio.sampleRate / 50;
     opusResidualBuffer_.clear();
+    opusNextTimestampMs_ = -1;
 
     return true;
 }
@@ -431,7 +450,7 @@ bool MkvPipeline::initializeVorbisEncoder() {
 }
 
 bool MkvPipeline::encodeAudioOpus(const AudioBuffer& buffer,
-                                   std::vector<std::vector<uint8_t>>& packets) {
+                                   std::vector<AudioPacket>& packets) {
     int channels = config_.audio.channelCount;
     int bps = config_.audio.bitsPerSample;
     int totalSamples = static_cast<int>(buffer.sampleCount);
@@ -465,6 +484,15 @@ bool MkvPipeline::encodeAudioOpus(const AudioBuffer& buffer,
     int totalFloats = static_cast<int>(inputFloat.size());
 
     std::vector<uint8_t> encodedBuf(4000);
+    if (opusNextTimestampMs_ < 0) {
+        const int64_t codecDelayMs = config_.audio.sampleRate > 0
+            ? (static_cast<int64_t>(opusLookaheadSamples_) * 1000LL +
+               static_cast<int64_t>(config_.audio.sampleRate) - 1) /
+                  static_cast<int64_t>(config_.audio.sampleRate)
+            : 0;
+        opusNextTimestampMs_ = toMkvTimestamp(buffer.timestamp) + codecDelayMs;
+    }
+    const int64_t frameDurationMs = 20;
 
     while (pos + frameSamplesTotal <= totalFloats) {
         int encoded = opus_encode_float(
@@ -479,7 +507,12 @@ bool MkvPipeline::encodeAudioOpus(const AudioBuffer& buffer,
             return false;
         }
 
-        packets.emplace_back(encodedBuf.data(), encodedBuf.data() + encoded);
+        if (!isInvalidOpusDtxPacket(encodedBuf.data(), encoded)) {
+            packets.push_back({std::vector<uint8_t>(encodedBuf.data(), encodedBuf.data() + encoded),
+                               opusNextTimestampMs_,
+                               frameDurationMs});
+        }
+        opusNextTimestampMs_ += frameDurationMs;
         pos += frameSamplesTotal;
     }
 
@@ -490,10 +523,20 @@ bool MkvPipeline::encodeAudioOpus(const AudioBuffer& buffer,
     return true;
 }
 
+bool MkvPipeline::isInvalidOpusDtxPacket(const uint8_t* data, int size) const {
+    return size == 3 && data &&
+           data[0] == 0xFC && data[1] == 0xFF && data[2] == 0xFE;
+}
+
 bool MkvPipeline::encodeAudioVorbis(const AudioBuffer& buffer,
-                                     std::vector<std::vector<uint8_t>>& packets) {
+                                     std::vector<AudioPacket>& packets) {
     int channels = config_.audio.channelCount;
     int totalSamples = static_cast<int>(buffer.sampleCount);
+    if (vorbisStartTimestampMs_ < 0) {
+        vorbisStartTimestampMs_ = toMkvTimestamp(buffer.timestamp);
+        vorbisNextTimestampMs_ = vorbisStartTimestampMs_;
+        vorbisLastGranule_ = 0;
+    }
 
     float** vorbisBuffer = vorbis_analysis_buffer(vorbisDsp_, totalSamples);
 
@@ -522,7 +565,27 @@ bool MkvPipeline::encodeAudioVorbis(const AudioBuffer& buffer,
 
         ogg_packet op;
         while (vorbis_bitrate_flushpacket(vorbisDsp_, &op)) {
-            packets.emplace_back(op.packet, op.packet + op.bytes);
+            int64_t packetStartGranule = vorbisLastGranule_;
+            const bool hasDefinitiveGranule = op.granulepos >= 0;
+            int64_t packetEndGranule = hasDefinitiveGranule ? op.granulepos : packetStartGranule;
+            if (packetEndGranule <= packetStartGranule) {
+                const long blockSize = vorbis_packet_blocksize(vorbisInfo_, &op);
+                packetEndGranule = packetStartGranule + std::max<long>(1, blockSize > 0 ? blockSize / 2 : 1);
+            }
+            const int64_t durationMs = std::max<int64_t>(
+                1,
+                (packetEndGranule - packetStartGranule) * 1000LL /
+                    static_cast<int64_t>(config_.audio.sampleRate));
+            const int64_t timestampMs = vorbisNextTimestampMs_ >= 0
+                ? vorbisNextTimestampMs_
+                : vorbisStartTimestampMs_;
+            packets.push_back({std::vector<uint8_t>(op.packet, op.packet + op.bytes),
+                               timestampMs,
+                               durationMs});
+            vorbisLastGranule_ = packetEndGranule;
+            if (hasDefinitiveGranule) {
+                vorbisNextTimestampMs_ = timestampMs + durationMs;
+            }
         }
     }
 
@@ -563,10 +626,11 @@ bool MkvPipeline::drainAudioEncoder()
             encodedBuf.data(),
             static_cast<opus_int32>(encodedBuf.size()));
 
-        if (encoded > 0) {
+        if (encoded > 0 && !isInvalidOpusDtxPacket(encodedBuf.data(), encoded)) {
             encodedBuf.resize(encoded);
-            const int64_t tsMs = maxTimestampMs_;
-            writeAudioPacketLive(std::move(encodedBuf), tsMs);
+            const int64_t tsMs = opusNextTimestampMs_ >= 0 ? opusNextTimestampMs_ : maxTimestampMs_;
+            writeAudioPacketLive(std::move(encodedBuf), tsMs, 20);
+            opusNextTimestampMs_ = tsMs + 20;
         }
         opusResidualBuffer_.clear();
     }
@@ -580,7 +644,25 @@ bool MkvPipeline::drainAudioEncoder()
             ogg_packet op;
             while (vorbis_bitrate_flushpacket(vorbisDsp_, &op)) {
                 std::vector<uint8_t> packet(op.packet, op.packet + op.bytes);
-                writeAudioPacketLive(std::move(packet), maxTimestampMs_);
+                int64_t packetStartGranule = vorbisLastGranule_;
+                const bool hasDefinitiveGranule = op.granulepos >= 0;
+                int64_t packetEndGranule = hasDefinitiveGranule ? op.granulepos : packetStartGranule;
+                if (packetEndGranule <= packetStartGranule) {
+                    const long blockSize = vorbis_packet_blocksize(vorbisInfo_, &op);
+                    packetEndGranule = packetStartGranule + std::max<long>(1, blockSize > 0 ? blockSize / 2 : 1);
+                }
+                const int64_t durationMs = std::max<int64_t>(
+                    1,
+                    (packetEndGranule - packetStartGranule) * 1000LL /
+                        static_cast<int64_t>(config_.audio.sampleRate));
+                const int64_t tsMs = vorbisNextTimestampMs_ >= 0
+                    ? vorbisNextTimestampMs_
+                    : (vorbisStartTimestampMs_ >= 0 ? vorbisStartTimestampMs_ : maxTimestampMs_);
+                writeAudioPacketLive(std::move(packet), tsMs, durationMs);
+                vorbisLastGranule_ = packetEndGranule;
+                if (hasDefinitiveGranule) {
+                    vorbisNextTimestampMs_ = tsMs + durationMs;
+                }
             }
         }
     }
@@ -621,6 +703,10 @@ void MkvPipeline::shutdownAudioEncoder() {
     }
     vorbisHeaders_.clear();
     opusResidualBuffer_.clear();
+    opusNextTimestampMs_ = -1;
+    vorbisStartTimestampMs_ = -1;
+    vorbisNextTimestampMs_ = -1;
+    vorbisLastGranule_ = 0;
 }
 
 // ============================================================================
@@ -1019,6 +1105,7 @@ bool MkvPipeline::initializeMkvWriter() {
     if (!writeTracks()) return false;
 
     cues_ = std::make_unique<KaxCues>();
+    cues_->SetGlobalTimecodeScale(MKV_TIMECODE_SCALE_NS);
 
     return true;
 }
@@ -1089,7 +1176,7 @@ bool MkvPipeline::writeSegmentInfo() {
         buf.insert(buf.end(), s.begin(), s.end());
     };
 
-    appendUintElement(0x2AD7B1, 3, 1000000, 3);
+    appendUintElement(0x2AD7B1, 3, MKV_TIMECODE_SCALE_NS, 3);
     appendUtf8Element(0x4D80, 2, "pbRecorder libmatroska");
     appendUtf8Element(0x5741, 2, "pbRecorder");
 
@@ -1219,6 +1306,13 @@ bool MkvPipeline::writeTracks() {
         default:                 audioCodecId = "A_AAC"; break;
         }
         audioTrack.writeString(0x86, 1, audioCodecId);
+        if (config_.audio.codec == AudioCodec::Opus) {
+            const uint64_t codecDelayNs = static_cast<uint64_t>(opusLookaheadSamples_) *
+                                          1000000000ULL /
+                                          static_cast<uint64_t>(config_.audio.sampleRate);
+            audioTrack.writeUint(0x56AA, 2, codecDelayNs, 4);
+            audioTrack.writeUint(0x56BB, 2, 80000000ULL, 4);
+        }
 
         std::vector<uint8_t> audioCodecPrivate;
         switch (config_.audio.codec) {
@@ -1275,12 +1369,14 @@ bool MkvPipeline::writeTracks() {
 
     auto& libTracks = GetChild<KaxTracks>(*segment_);
     auto& vTrack = GetChild<KaxTrackEntry>(libTracks);
-    GetChild<KaxTrackNumber>(vTrack).SetValue(VIDEO_TRACK_NUM);
+    vTrack.SetGlobalTimecodeScale(MKV_TIMECODE_SCALE_NS);
+    *static_cast<EbmlUInteger*>(&GetChild<KaxTrackNumber>(vTrack)) = VIDEO_TRACK_NUM;
     videoTrackEntry_ = &vTrack;
 
     if (hasAudio_) {
         auto& aTrack = AddNewChild<KaxTrackEntry>(libTracks);
-        GetChild<KaxTrackNumber>(aTrack).SetValue(AUDIO_TRACK_NUM);
+        aTrack.SetGlobalTimecodeScale(MKV_TIMECODE_SCALE_NS);
+        *static_cast<EbmlUInteger*>(&GetChild<KaxTrackNumber>(aTrack)) = AUDIO_TRACK_NUM;
         audioTrackEntry_ = &aTrack;
     }
 
@@ -1325,7 +1421,9 @@ void MkvPipeline::writeClusterData(uint8_t trackNum, int64_t timestampMs,
 
         currentCluster_ = new KaxCluster();
         currentCluster_->SetParent(*segment_);
-        currentCluster_->InitTimecode(timestampMs, 1000000);
+        currentCluster_->InitTimecode(
+            static_cast<uint64_t>(timestampMs),
+            MKV_TIMECODE_SCALE_NS);
         clusterStartTimestamp_ = timestampMs;
 
         if (keyframe && trackNum == VIDEO_TRACK_NUM) {
@@ -1343,8 +1441,6 @@ void MkvPipeline::writeClusterData(uint8_t trackNum, int64_t timestampMs,
         cueEntries_.push_back(cue);
     }
 
-    KaxSimpleBlock& simpleBlock = AddNewChild<KaxSimpleBlock>(*currentCluster_);
-
     auto* dataCopy = static_cast<uint8*>(std::malloc(frameSize));
     std::memcpy(dataCopy, frameData, frameSize);
     auto* dataBuf = new DataBuffer(
@@ -1354,19 +1450,17 @@ void MkvPipeline::writeClusterData(uint8_t trackNum, int64_t timestampMs,
         true
     );
 
-    simpleBlock.SetParent(*currentCluster_);
-
     const KaxTrackEntry* trackEntry = (trackNum == VIDEO_TRACK_NUM)
         ? videoTrackEntry_ : audioTrackEntry_;
 
-    simpleBlock.AddFrame(
+    KaxBlockGroup* newBlock = nullptr;
+    currentCluster_->AddFrame(
         *trackEntry,
-        timestampMs * 1000000ULL,
+        static_cast<uint64_t>(timestampMs) * MKV_TIMECODE_SCALE_NS,
         *dataBuf,
+        newBlock,
         LACING_NONE
     );
-    simpleBlock.SetKeyframe(trackNum == AUDIO_TRACK_NUM || keyframe);
-    simpleBlock.SetDiscardable(false);
 }
 
 void MkvPipeline::flushCurrentCluster() {
@@ -1738,7 +1832,7 @@ std::vector<uint8_t> MkvPipeline::buildOpusHead() const {
     head.push_back(1);
     head.push_back(static_cast<uint8_t>(config_.audio.channelCount));
 
-    uint16_t preSkip = 3840;
+    uint16_t preSkip = static_cast<uint16_t>(std::clamp(opusLookaheadSamples_, 0, 65535));
     head.push_back(static_cast<uint8_t>(preSkip & 0xFF));
     head.push_back(static_cast<uint8_t>(preSkip >> 8));
 

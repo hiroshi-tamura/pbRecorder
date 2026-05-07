@@ -64,10 +64,17 @@ private:
     bool initializeAudioEncoder();
     bool initializeOpusEncoder();
     bool initializeVorbisEncoder();
+    struct AudioPacket {
+        std::vector<uint8_t> data;
+        int64_t timestampMs;
+        int64_t durationMs = 0;
+    };
+
     bool encodeAudioOpus(const AudioBuffer& buffer,
-                         std::vector<std::vector<uint8_t>>& packets);
+                         std::vector<AudioPacket>& packets);
+    bool isInvalidOpusDtxPacket(const uint8_t* data, int size) const;
     bool encodeAudioVorbis(const AudioBuffer& buffer,
-                           std::vector<std::vector<uint8_t>>& packets);
+                           std::vector<AudioPacket>& packets);
     void shutdownAudioEncoder();
 
     // ---- Remux: temp .mp4 → .mkv ----
@@ -117,17 +124,18 @@ private:
     bool sinkWriterHasAudio_ = false; // true only for the legacy remux fallback
 
     // ---- Audio buffer (for Opus/Vorbis/PCM — not through SinkWriter) ----
-    struct AudioPacket {
-        std::vector<uint8_t> data;
-        int64_t timestampMs;
-    };
     std::vector<AudioPacket> bufferedAudioPackets_;
     std::mutex audioBufferMutex_;
 
     // ---- Opus encoder ----
     OpusEncoder* opusEncoder_ = nullptr;
     int opusFrameSamples_ = 0;
+    int opusLookaheadSamples_ = 0;
     std::vector<float> opusResidualBuffer_;
+    int64_t opusNextTimestampMs_ = -1;
+    int64_t vorbisStartTimestampMs_ = -1;
+    int64_t vorbisNextTimestampMs_ = -1;
+    int64_t vorbisLastGranule_ = 0;
 
     // ---- Vorbis encoder ----
     vorbis_info* vorbisInfo_ = nullptr;

@@ -39,6 +39,7 @@ private:
     void compositeCursor(ID3D11Texture2D* texture,
                          const DXGI_OUTDUPL_FRAME_INFO& frameInfo);
     int64_t queryTimestamp() const;
+    int64_t frameTimestamp(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) const;
     void reportError(const std::string& msg);
 
     // D3D resources (device is NOT owned, just referenced)

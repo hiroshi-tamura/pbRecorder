@@ -377,15 +377,18 @@ void WasapiCapture::captureThread() {
             if (numFramesAvailable > 0) {
                 // Calculate timestamp in 100ns units
                 int64_t timestamp = 0;
-                if (qpcPosition > 0) {
-                    // qpcPosition is in QPC units; convert to 100ns
-                    timestamp = static_cast<int64_t>(
-                        (static_cast<double>(qpcPosition - startQpc_) / qpcFrequency_) * 10000000.0);
+                const bool timestampError =
+                    (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0;
+                if (qpcPosition > 0 && !timestampError) {
+                    // WASAPI GetBuffer returns QPC position already converted to 100ns units.
+                    timestamp = static_cast<int64_t>(qpcPosition);
                 } else {
                     LARGE_INTEGER now;
                     QueryPerformanceCounter(&now);
                     timestamp = static_cast<int64_t>(
-                        (static_cast<double>(now.QuadPart - startQpc_) / qpcFrequency_) * 10000000.0);
+                        (static_cast<double>(now.QuadPart) / qpcFrequency_) * 10000000.0);
+                    timestamp -= static_cast<int64_t>(numFramesAvailable) * 10000000LL /
+                                 static_cast<int64_t>(sampleRate_ > 0 ? sampleRate_ : 48000);
                 }
                 if (timestamp < 0) timestamp = 0;
 

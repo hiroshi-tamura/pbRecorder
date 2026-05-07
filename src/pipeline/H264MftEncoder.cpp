@@ -74,15 +74,29 @@ bool H264MftEncoder::initialize(const RecordingConfig& config, ID3D11Device* dev
 {
     config_ = config;
     d3dDevice_ = device;
+    lastError_.clear();
     if (d3dDevice_) {
         d3dDevice_->GetImmediateContext(&d3dContext_);
     }
 
-    HRESULT hr = CoCreateInstance(PB_CLSID_CMSH264EncoderMFT,
-                                  nullptr,
-                                  CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&encoder_));
-    if (FAILED(hr) || !encoder_) {
+    HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (SUCCEEDED(coHr)) {
+        comInitialized_ = true;
+    } else if (coHr != RPC_E_CHANGED_MODE) {
+        lastError_ = "CoInitializeEx failed: " + hrToString(coHr);
+        return false;
+    }
+
+    if (!mfStarted_) {
+        HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+        if (FAILED(hr)) {
+            lastError_ = "MFStartup failed: " + hrToString(hr);
+            return false;
+        }
+        mfStarted_ = true;
+    }
+
+    if (!createEncoder()) {
         return false;
     }
 
@@ -100,6 +114,12 @@ bool H264MftEncoder::initialize(const RecordingConfig& config, ID3D11Device* dev
         codecApi->SetValue(&CODECAPI_AVLowLatencyMode, &value);
         codecApi->SetValue(&CODECAPI_AVEncCommonRealTime, &value);
         VariantClear(&value);
+
+        VariantInit(&value);
+        value.vt = VT_UI4;
+        value.ulVal = 0;
+        codecApi->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &value);
+        VariantClear(&value);
     }
 
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
@@ -110,8 +130,104 @@ bool H264MftEncoder::initialize(const RecordingConfig& config, ID3D11Device* dev
     return true;
 }
 
+bool H264MftEncoder::createEncoder()
+{
+    MFT_REGISTER_TYPE_INFO inputInfo = {};
+    inputInfo.guidMajorType = MFMediaType_Video;
+    inputInfo.guidSubtype = MFVideoFormat_NV12;
+
+    MFT_REGISTER_TYPE_INFO outputInfo = {};
+    outputInfo.guidMajorType = MFMediaType_Video;
+    outputInfo.guidSubtype = MFVideoFormat_H264;
+
+    IMFActivate** activates = nullptr;
+    UINT32 count = 0;
+    HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,
+                   MFT_ENUM_FLAG_SYNCMFT |
+                       MFT_ENUM_FLAG_LOCALMFT |
+                       MFT_ENUM_FLAG_SORTANDFILTER,
+                   &inputInfo,
+                   &outputInfo,
+                   &activates,
+                   &count);
+    if (SUCCEEDED(hr) && count > 0 && activates) {
+        for (UINT32 i = 0; i < count && !encoder_; ++i) {
+            if (activates[i]) {
+                hr = activates[i]->ActivateObject(IID_PPV_ARGS(&encoder_));
+                if (FAILED(hr)) {
+                    lastError_ = "H.264 MFT ActivateObject failed: " + hrToString(hr);
+                }
+            }
+        }
+
+        for (UINT32 i = 0; i < count; ++i) {
+            if (activates[i]) {
+                activates[i]->Release();
+            }
+        }
+        CoTaskMemFree(activates);
+    } else {
+        lastError_ = "MFTEnumEx H.264 encoder failed: " + hrToString(hr);
+        if (activates) {
+            CoTaskMemFree(activates);
+        }
+    }
+
+    if (encoder_) {
+        return true;
+    }
+
+    hr = CoCreateInstance(PB_CLSID_CMSH264EncoderMFT,
+                          nullptr,
+                          CLSCTX_INPROC_SERVER,
+                          IID_PPV_ARGS(&encoder_));
+    if (SUCCEEDED(hr) && encoder_) {
+        return true;
+    }
+
+    if (!lastError_.empty()) {
+        lastError_ += "; ";
+    }
+    lastError_ += "CoCreateInstance H.264 MFT failed: " + hrToString(hr);
+
+    return false;
+}
+
 bool H264MftEncoder::configureOutputType()
 {
+    HRESULT lastHr = E_FAIL;
+    for (DWORD i = 0; ; ++i) {
+        Microsoft::WRL::ComPtr<IMFMediaType> type;
+        HRESULT hr = encoder_->GetOutputAvailableType(0, i, &type);
+        if (hr == MF_E_NO_MORE_TYPES) {
+            break;
+        }
+        if (FAILED(hr) || !type) {
+            lastHr = hr;
+            continue;
+        }
+
+        GUID subtype = {};
+        if (FAILED(type->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+            !IsEqualGUID(subtype, MFVideoFormat_H264)) {
+            continue;
+        }
+
+        type->SetUINT32(MF_MT_AVG_BITRATE, config_.video.bitrate);
+        MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE,
+                           config_.video.width, config_.video.height);
+        MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, config_.video.fps, 1);
+        MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+        type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+
+        hr = encoder_->SetOutputType(0, type.Get(), 0);
+        if (SUCCEEDED(hr)) {
+            return true;
+        }
+        lastHr = hr;
+    }
+
     Microsoft::WRL::ComPtr<IMFMediaType> type;
     PB_CHECK_HR(MFCreateMediaType(&type), "Failed to create H.264 output type");
     PB_CHECK_HR(type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video), "Failed to set major type");
@@ -128,7 +244,12 @@ bool H264MftEncoder::configureOutputType()
                 "Failed to set interlace mode");
 
     HRESULT hr = encoder_->SetOutputType(0, type.Get(), 0);
-    return SUCCEEDED(hr);
+    if (FAILED(hr)) {
+        lastError_ = "SetOutputType H.264 failed: " + hrToString(hr) +
+                     " (available type last result: " + hrToString(lastHr) + ")";
+        return false;
+    }
+    return true;
 }
 
 bool H264MftEncoder::configureInputType()
@@ -146,9 +267,24 @@ bool H264MftEncoder::configureInputType()
                 "Failed to set pixel aspect ratio");
     PB_CHECK_HR(type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive),
                 "Failed to set interlace mode");
+    PB_CHECK_HR(type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE),
+                "Failed to set independent samples");
+    PB_CHECK_HR(type->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE),
+                "Failed to set fixed samples");
+    PB_CHECK_HR(type->SetUINT32(MF_MT_SAMPLE_SIZE,
+                                static_cast<UINT32>(
+                                    static_cast<uint64_t>(config_.video.width) *
+                                    static_cast<uint64_t>(config_.video.height) * 3ULL / 2ULL)),
+                "Failed to set sample size");
+    PB_CHECK_HR(type->SetUINT32(MF_MT_DEFAULT_STRIDE, config_.video.width),
+                "Failed to set default stride");
 
     HRESULT hr = encoder_->SetInputType(0, type.Get(), 0);
-    return SUCCEEDED(hr);
+    if (FAILED(hr)) {
+        lastError_ = "SetInputType NV12 failed: " + hrToString(hr);
+        return false;
+    }
+    return true;
 }
 
 bool H264MftEncoder::encodeFrame(const VideoFrame& frame, std::vector<EncodedVideoPacket>& packets)
@@ -162,10 +298,7 @@ bool H264MftEncoder::encodeFrame(const VideoFrame& frame, std::vector<EncodedVid
         return false;
     }
 
-    if (firstTimestamp_ < 0) {
-        firstTimestamp_ = frame.timestamp;
-    }
-    int64_t relativeTs = frame.timestamp - firstTimestamp_;
+    int64_t relativeTs = frame.timestamp;
     if (relativeTs < 0) relativeTs = 0;
     const int64_t duration = 10000000LL / config_.video.fps;
 
@@ -352,6 +485,14 @@ void H264MftEncoder::shutdown()
     stagingWidth_ = 0;
     stagingHeight_ = 0;
     initialized_ = false;
+    if (mfStarted_) {
+        MFShutdown();
+        mfStarted_ = false;
+    }
+    if (comInitialized_) {
+        CoUninitialize();
+        comInitialized_ = false;
+    }
 }
 
 } // namespace pb

@@ -28,12 +28,14 @@ AacMftEncoder::~AacMftEncoder()
 bool AacMftEncoder::initialize(const RecordingConfig& config)
 {
     config_ = config;
+    lastError_.clear();
 
     HRESULT hr = CoCreateInstance(PB_CLSID_AACMFTEncoder,
                                   nullptr,
                                   CLSCTX_INPROC_SERVER,
                                   IID_PPV_ARGS(&encoder_));
     if (FAILED(hr) || !encoder_) {
+        lastError_ = "CoCreateInstance AAC MFT failed: " + hrToString(hr);
         return false;
     }
 
@@ -44,6 +46,7 @@ bool AacMftEncoder::initialize(const RecordingConfig& config)
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
     firstTimestamp_ = -1;
+    nextInputTimestamp_ = -1;
     initialized_ = true;
     return true;
 }
@@ -68,7 +71,11 @@ bool AacMftEncoder::configureOutputType()
                 "Failed to set AAC profile");
 
     HRESULT hr = encoder_->SetOutputType(0, type.Get(), 0);
-    return SUCCEEDED(hr);
+    if (FAILED(hr)) {
+        lastError_ = "SetOutputType AAC failed: " + hrToString(hr);
+        return false;
+    }
+    return true;
 }
 
 bool AacMftEncoder::configureInputType()
@@ -93,7 +100,11 @@ bool AacMftEncoder::configureInputType()
                 "Failed to set PCM byte rate");
 
     HRESULT hr = encoder_->SetInputType(0, type.Get(), 0);
-    return SUCCEEDED(hr);
+    if (FAILED(hr)) {
+        lastError_ = "SetInputType AAC PCM failed: " + hrToString(hr);
+        return false;
+    }
+    return true;
 }
 
 bool AacMftEncoder::encode(const AudioBuffer& buffer, std::vector<EncodedAudioPacket>& packets)
@@ -107,14 +118,14 @@ bool AacMftEncoder::encode(const AudioBuffer& buffer, std::vector<EncodedAudioPa
         return true;
     }
 
-    if (firstTimestamp_ < 0) {
-        firstTimestamp_ = buffer.timestamp;
-    }
+    const int64_t duration = static_cast<int64_t>(buffer.sampleCount) * 10000000LL /
+                             static_cast<int64_t>(config_.audio.sampleRate);
 
-    int64_t relativeTs = buffer.timestamp - firstTimestamp_;
-    if (relativeTs < 0) {
-        relativeTs = 0;
+    if (nextInputTimestamp_ < 0) {
+        nextInputTimestamp_ = std::max<int64_t>(0, buffer.timestamp);
     }
+    int64_t relativeTs = nextInputTimestamp_;
+    nextInputTimestamp_ += duration;
 
     const DWORD dataSize = static_cast<DWORD>(pcm.size() * sizeof(int16_t));
     Microsoft::WRL::ComPtr<IMFMediaBuffer> mediaBuffer;
@@ -131,12 +142,17 @@ bool AacMftEncoder::encode(const AudioBuffer& buffer, std::vector<EncodedAudioPa
     PB_CHECK_HR(sample->AddBuffer(mediaBuffer.Get()), "Failed to add AAC input buffer");
     PB_CHECK_HR(sample->SetSampleTime(relativeTs), "Failed to set AAC sample time");
 
-    const int64_t duration = static_cast<int64_t>(buffer.sampleCount) * 10000000LL /
-                             static_cast<int64_t>(config_.audio.sampleRate);
     PB_CHECK_HR(sample->SetSampleDuration(duration), "Failed to set AAC sample duration");
 
     HRESULT hr = encoder_->ProcessInput(0, sample.Get(), 0);
+    if (hr == MF_E_NOTACCEPTING) {
+        if (!processOutput(packets)) {
+            return false;
+        }
+        hr = encoder_->ProcessInput(0, sample.Get(), 0);
+    }
     if (FAILED(hr)) {
+        lastError_ = "AAC ProcessInput failed: " + hrToString(hr);
         return false;
     }
 
@@ -167,6 +183,7 @@ bool AacMftEncoder::processOutput(std::vector<EncodedAudioPacket>& packets)
     MFT_OUTPUT_STREAM_INFO info = {};
     HRESULT hr = encoder_->GetOutputStreamInfo(0, &info);
     if (FAILED(hr)) {
+        lastError_ = "AAC GetOutputStreamInfo failed: " + hrToString(hr);
         return false;
     }
 
@@ -190,10 +207,13 @@ bool AacMftEncoder::processOutput(std::vector<EncodedAudioPacket>& packets)
             return true;
         }
         if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
-            configureOutputType();
+            if (!configureOutputType()) {
+                return false;
+            }
             continue;
         }
         if (FAILED(hr)) {
+            lastError_ = "AAC ProcessOutput failed: " + hrToString(hr);
             return false;
         }
 
@@ -232,8 +252,8 @@ bool AacMftEncoder::processOutput(std::vector<EncodedAudioPacket>& packets)
             output.pSample->Release();
         }
 
-        if (!(output.dwStatus & MFT_OUTPUT_DATA_BUFFER_INCOMPLETE)) {
-            return true;
+        if (output.dwStatus & MFT_OUTPUT_DATA_BUFFER_INCOMPLETE) {
+            continue;
         }
     }
 }
@@ -271,6 +291,7 @@ void AacMftEncoder::shutdown()
     }
     encoder_.Reset();
     firstTimestamp_ = -1;
+    nextInputTimestamp_ = -1;
     initialized_ = false;
 }
 

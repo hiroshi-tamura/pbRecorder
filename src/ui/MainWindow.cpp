@@ -455,6 +455,8 @@ void MainWindow::setupConnections()
             this, &MainWindow::onSelectRegion);
     connect(ui->browseBtn, &QPushButton::clicked,
             this, &MainWindow::onBrowse);
+    connect(ui->openOutputFolderBtn, &QPushButton::clicked,
+            this, &MainWindow::onOpenOutputFolder);
     connect(ui->recordBtn, &QPushButton::clicked,
             this, &MainWindow::onRecord);
     ui->recordBtn->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
@@ -1063,6 +1065,18 @@ void MainWindow::onBrowse()
     if (!dir.isEmpty()) {
         ui->outputDirEdit->setText(QDir::toNativeSeparators(dir));
     }
+}
+
+void MainWindow::onOpenOutputFolder()
+{
+    QString dir = ui->outputDirEdit->text().trimmed();
+    if (dir.isEmpty()) {
+        dir = QCoreApplication::applicationDirPath() + "/Output";
+        ui->outputDirEdit->setText(QDir::toNativeSeparators(dir));
+    }
+
+    QDir().mkpath(dir);
+    QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
 }
 
 // ============================================================================
@@ -1972,6 +1986,10 @@ void MainWindow::retranslateUi()
     ui->outputDirLabel->setText(ja ? "フォルダ:" : "Folder:");
     ui->outputDirEdit->setPlaceholderText(ja ? "出力フォルダ..." : "Output folder...");
     ui->browseBtn->setText(ja ? "参照" : "Browse");
+    ui->openOutputFolderBtn->setText(ja ? "開く" : "Open");
+    ui->openOutputFolderBtn->setToolTip(ja
+        ? "現在の出力フォルダをエクスプローラーで開く"
+        : "Open the current output folder in Explorer");
     ui->outputFileLabel->setText(ja ? "ファイル名:" : "Filename:");
     ui->outputFileEdit->setPlaceholderText(ja ? "ファイル名..." : "Filename...");
     ui->autoFileNameCheck->setText(ja ? "自動" : "Auto");

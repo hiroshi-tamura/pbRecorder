@@ -48,6 +48,7 @@ private slots:
     void onRefreshWindows();
     void onSelectRegion();
     void onBrowse();
+    void onOpenOutputFolder();
     void onRecord();
     void onPause();
     void onUpdateTimer();

@@ -161,7 +161,7 @@ void DxgiScreenCapture::captureLoop() {
 
                 VideoFrame vf;
                 vf.texture = frameCopy;
-                vf.timestamp = queryTimestamp();
+                vf.timestamp = frameTimestamp(frameInfo);
                 vf.width = width_;
                 vf.height = height_;
 
@@ -418,6 +418,15 @@ int64_t DxgiScreenCapture::queryTimestamp() const {
     return static_cast<int64_t>(
         (static_cast<double>(counter.QuadPart) / static_cast<double>(qpcFrequency_)) * 10000000.0
     );
+}
+
+int64_t DxgiScreenCapture::frameTimestamp(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) const {
+    if (frameInfo.LastPresentTime.QuadPart > 0 && qpcFrequency_ > 0) {
+        return static_cast<int64_t>(
+            (static_cast<double>(frameInfo.LastPresentTime.QuadPart) /
+             static_cast<double>(qpcFrequency_)) * 10000000.0);
+    }
+    return queryTimestamp();
 }
 
 void DxgiScreenCapture::reportError(const std::string& msg) {

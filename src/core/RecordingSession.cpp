@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <iterator>
+#include <limits>
 
 namespace pb {
 
@@ -58,6 +59,15 @@ uint32_t supportedSampleRateForCodec(AudioCodec codec, uint32_t requested)
     default:
         return requested;
     }
+}
+
+int64_t currentQpcTime100ns()
+{
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return static_cast<int64_t>(
+        (static_cast<double>(now.QuadPart) / static_cast<double>(freq.QuadPart)) * 10000000.0);
 }
 
 } // namespace
@@ -216,6 +226,16 @@ bool RecordingSession::start() {
     audioQueue_.clear();
     pauseOffset_ = 0;
     pauseStartTime_ = 0;
+    recordingStartTimestamp_ = currentQpcTime100ns();
+    mediaOriginTimestamp_ = -1;
+    firstVideoTimestamp_ = -1;
+    firstAudioTimestamp_ = -1;
+    pendingVideoFrames_.clear();
+    pendingAudioBuffers_.clear();
+    audioPrimed_ = false;
+    expectedAudioTimestamp_ = -1;
+    resampleInputFramesTotal_ = 0;
+    resampleOutputFramesTotal_ = 0;
 
     // Start pipeline
     if (!pipeline_->start()) {
@@ -314,12 +334,9 @@ bool RecordingSession::stop() {
 bool RecordingSession::pause() {
     if (!recording_.load() || paused_.load()) return false;
 
-    LARGE_INTEGER freq, now;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&now);
     {
         std::lock_guard<std::mutex> lock(pauseMutex_);
-        pauseStartTime_ = (now.QuadPart * 10000000LL) / freq.QuadPart;
+        pauseStartTime_ = currentQpcTime100ns();
     }
 
     paused_.store(true);
@@ -329,12 +346,9 @@ bool RecordingSession::pause() {
 bool RecordingSession::resume() {
     if (!recording_.load() || !paused_.load()) return false;
 
-    LARGE_INTEGER freq, now;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&now);
     {
         std::lock_guard<std::mutex> lock(pauseMutex_);
-        int64_t resumeTime = (now.QuadPart * 10000000LL) / freq.QuadPart;
+        int64_t resumeTime = currentQpcTime100ns();
         pauseOffset_ += (resumeTime - pauseStartTime_);
         pauseStartTime_ = 0;
     }
@@ -353,19 +367,108 @@ int64_t RecordingSession::getFileSize() const {
     return 0;
 }
 
-void RecordingSession::onVideoFrame(const VideoFrame& frame) {
-    if (!recording_.load() || paused_.load()) return;
-
-    // Adjust timestamp for pause offset
-    VideoFrame adjusted = frame;
-    {
-        std::lock_guard<std::mutex> lock(pauseMutex_);
-        adjusted.timestamp -= pauseOffset_;
+int64_t RecordingSession::normalizeTimestamp(int64_t timestamp100ns) const {
+    int64_t normalized = timestamp100ns - recordingStartTimestamp_;
+    if (normalized < 0) {
+        normalized = 0;
     }
+    return normalized;
+}
+
+int64_t RecordingSession::normalizeMediaTimestamp(int64_t timestamp100ns) const {
+    int64_t normalized = timestamp100ns - mediaOriginTimestamp_;
+    if (normalized < 0) {
+        normalized = 0;
+    }
+    return normalized;
+}
+
+bool RecordingSession::mediaOriginReadyLocked() const {
+    if (mediaOriginTimestamp_ >= 0) {
+        return true;
+    }
+    if (!config_.recordAudio) {
+        return firstVideoTimestamp_ >= 0;
+    }
+    return firstVideoTimestamp_ >= 0 && firstAudioTimestamp_ >= 0;
+}
+
+bool RecordingSession::shouldForceMediaOriginLocked() const {
+    if (mediaOriginTimestamp_ >= 0 || firstVideoTimestamp_ < 0 || !config_.recordAudio) {
+        return false;
+    }
+
+    const int fps = std::clamp(config_.video.fps, 1, 240);
+    if (pendingVideoFrames_.size() >= static_cast<size_t>(fps)) {
+        return true;
+    }
+
+    if (!pendingVideoFrames_.empty()) {
+        const int64_t span = pendingVideoFrames_.back().timestamp - firstVideoTimestamp_;
+        return span >= 10000000LL;
+    }
+
+    return false;
+}
+
+void RecordingSession::establishMediaOriginLocked() {
+    if (mediaOriginTimestamp_ >= 0) {
+        return;
+    }
+
+    if (!mediaOriginReadyLocked() && !shouldForceMediaOriginLocked()) {
+        return;
+    }
+
+    mediaOriginTimestamp_ = firstVideoTimestamp_;
+    if (config_.recordAudio && firstAudioTimestamp_ >= 0) {
+        mediaOriginTimestamp_ = std::min(mediaOriginTimestamp_, firstAudioTimestamp_);
+    }
+
+    for (auto& frame : pendingVideoFrames_) {
+        enqueueVideoFrameLocked(std::move(frame));
+    }
+    pendingVideoFrames_.clear();
+
+    for (auto& buffer : pendingAudioBuffers_) {
+        enqueueAudioBufferLocked(std::move(buffer));
+    }
+    pendingAudioBuffers_.clear();
+}
+
+void RecordingSession::enqueueVideoFrameLocked(VideoFrame frame) {
+    frame.timestamp = normalizeMediaTimestamp(frame.timestamp);
+    frame.timestamp -= pauseOffset_;
+    if (frame.timestamp < 0) frame.timestamp = 0;
 
     const size_t maxQueuedFrames = static_cast<size_t>(
         std::clamp(config_.video.fps * 2, 5, 240));
-    videoQueue_.pushBounded(std::move(adjusted), maxQueuedFrames);
+    videoQueue_.pushBounded(std::move(frame), maxQueuedFrames);
+}
+
+void RecordingSession::enqueueAudioBufferLocked(AudioBuffer buffer) {
+    buffer.timestamp = normalizeMediaTimestamp(buffer.timestamp);
+    buffer.timestamp -= pauseOffset_;
+    if (buffer.timestamp < 0) buffer.timestamp = 0;
+    audioQueue_.pushBounded(std::move(buffer), 600);
+}
+
+void RecordingSession::onVideoFrame(const VideoFrame& frame) {
+    if (!recording_.load() || paused_.load()) return;
+
+    VideoFrame adjusted = frame;
+    {
+        std::lock_guard<std::mutex> lock(pauseMutex_);
+        if (firstVideoTimestamp_ < 0) {
+            firstVideoTimestamp_ = adjusted.timestamp;
+        }
+        if (mediaOriginTimestamp_ < 0) {
+            pendingVideoFrames_.push_back(std::move(adjusted));
+            establishMediaOriginLocked();
+            return;
+        }
+        enqueueVideoFrameLocked(std::move(adjusted));
+    }
 }
 
 void RecordingSession::onAudioBuffer(const AudioBuffer& buffer) {
@@ -374,10 +477,16 @@ void RecordingSession::onAudioBuffer(const AudioBuffer& buffer) {
     AudioBuffer adjusted = buffer;
     {
         std::lock_guard<std::mutex> lock(pauseMutex_);
-        adjusted.timestamp -= pauseOffset_;
+        if (firstAudioTimestamp_ < 0) {
+            firstAudioTimestamp_ = adjusted.timestamp;
+        }
+        if (mediaOriginTimestamp_ < 0) {
+            pendingAudioBuffers_.push_back(std::move(adjusted));
+            establishMediaOriginLocked();
+            return;
+        }
+        enqueueAudioBufferLocked(std::move(adjusted));
     }
-
-    audioQueue_.pushBounded(std::move(adjusted), 600);
 }
 
 void RecordingSession::onError(const std::string& error) {
@@ -410,13 +519,7 @@ void RecordingSession::audioWriterThread() {
     while (recording_.load()) {
         AudioBuffer buffer;
         if (audioQueue_.tryPop(buffer, std::chrono::milliseconds(50))) {
-            if (needsResample_) {
-                buffer = resampleBuffer(buffer, config_.audio.sampleRate);
-            }
-            if (needsChannelMix_) {
-                buffer = normalizeAudioChannels(buffer, config_.audio.channelCount);
-            }
-            if (!pipeline_->writeAudioSamples(buffer)) {
+            if (!writeProcessedAudioBuffer(std::move(buffer))) {
                 onError("Failed to write audio samples");
                 break;
             }
@@ -426,14 +529,84 @@ void RecordingSession::audioWriterThread() {
     // Drain remaining buffers
     AudioBuffer buffer;
     while (audioQueue_.tryPop(buffer, std::chrono::milliseconds(1))) {
-        if (needsResample_) {
-            buffer = resampleBuffer(buffer, config_.audio.sampleRate);
-        }
-        if (needsChannelMix_) {
-            buffer = normalizeAudioChannels(buffer, config_.audio.channelCount);
-        }
-        pipeline_->writeAudioSamples(buffer);
+        writeProcessedAudioBuffer(std::move(buffer));
     }
+}
+
+bool RecordingSession::writeProcessedAudioBuffer(AudioBuffer buffer) {
+    if (needsResample_) {
+        buffer = resampleBuffer(buffer, config_.audio.sampleRate);
+    }
+    if (needsChannelMix_) {
+        buffer = normalizeAudioChannels(buffer, config_.audio.channelCount);
+    }
+    if (!writeLeadingSilenceIfNeeded(buffer)) {
+        return false;
+    }
+    if (expectedAudioTimestamp_ >= 0 && buffer.timestamp > expectedAudioTimestamp_) {
+        const int64_t gap = buffer.timestamp - expectedAudioTimestamp_;
+        // Ignore sub-millisecond jitter, but preserve real device/queue gaps.
+        if (gap > 10000 && buffer.sampleRate > 0 && buffer.channelCount > 0 && buffer.bitsPerSample > 0) {
+            AudioBuffer silence;
+            silence.timestamp = expectedAudioTimestamp_;
+            silence.sampleRate = buffer.sampleRate;
+            silence.channelCount = buffer.channelCount;
+            silence.bitsPerSample = buffer.bitsPerSample;
+            const uint64_t frames = static_cast<uint64_t>(gap) *
+                                    static_cast<uint64_t>(buffer.sampleRate) / 10000000ULL;
+            silence.sampleCount = static_cast<uint32_t>(
+                std::min<uint64_t>(frames, std::numeric_limits<uint32_t>::max()));
+            const uint32_t bytesPerSample = silence.bitsPerSample / 8;
+            silence.data.resize(static_cast<size_t>(silence.sampleCount) *
+                                silence.channelCount * bytesPerSample, 0);
+            if (silence.sampleCount > 0 && !pipeline_->writeAudioSamples(silence)) {
+                return false;
+            }
+        }
+    } else if (expectedAudioTimestamp_ >= 0 && buffer.timestamp < expectedAudioTimestamp_) {
+        buffer.timestamp = expectedAudioTimestamp_;
+    }
+    expectedAudioTimestamp_ = buffer.timestamp +
+        static_cast<int64_t>(buffer.sampleCount) * 10000000LL /
+            static_cast<int64_t>(buffer.sampleRate > 0 ? buffer.sampleRate : 48000);
+    return pipeline_->writeAudioSamples(buffer);
+}
+
+bool RecordingSession::writeLeadingSilenceIfNeeded(const AudioBuffer& firstBuffer) {
+    if (audioPrimed_) {
+        return true;
+    }
+    audioPrimed_ = true;
+
+    if (config_.container != ContainerFormat::MKV) {
+        return true;
+    }
+
+    if (firstBuffer.timestamp <= 0 || firstBuffer.sampleRate == 0 ||
+        firstBuffer.channelCount == 0 || firstBuffer.bitsPerSample == 0) {
+        return true;
+    }
+
+    const uint64_t frames = static_cast<uint64_t>(firstBuffer.timestamp) *
+                            static_cast<uint64_t>(firstBuffer.sampleRate) / 10000000ULL;
+    if (frames == 0) {
+        return true;
+    }
+
+    AudioBuffer silence;
+    silence.timestamp = 0;
+    silence.sampleRate = firstBuffer.sampleRate;
+    silence.channelCount = firstBuffer.channelCount;
+    silence.bitsPerSample = firstBuffer.bitsPerSample;
+    silence.sampleCount = static_cast<uint32_t>(
+        std::min<uint64_t>(frames, std::numeric_limits<uint32_t>::max()));
+    const uint32_t bytesPerSample = silence.bitsPerSample / 8;
+    silence.data.resize(static_cast<size_t>(silence.sampleCount) *
+                        silence.channelCount * bytesPerSample, 0);
+
+    expectedAudioTimestamp_ = static_cast<int64_t>(silence.sampleCount) * 10000000LL /
+                              static_cast<int64_t>(silence.sampleRate);
+    return pipeline_->writeAudioSamples(silence);
 }
 
 std::unique_ptr<ICaptureSource> RecordingSession::createCaptureSource(CaptureMode mode) {
@@ -482,7 +655,17 @@ AudioBuffer RecordingSession::resampleBuffer(const AudioBuffer& input, uint32_t 
 
     double ratio = static_cast<double>(targetRate) / srcRate;
     uint32_t srcFrames = input.sampleCount;
-    uint32_t dstFrames = static_cast<uint32_t>(std::max(1.0, std::round(srcFrames * ratio)));
+    const uint64_t expectedOutputTotal = static_cast<uint64_t>(
+        std::llround(static_cast<double>(resampleInputFramesTotal_ + srcFrames) * ratio));
+    uint32_t dstFrames = static_cast<uint32_t>(
+        expectedOutputTotal > resampleOutputFramesTotal_
+            ? expectedOutputTotal - resampleOutputFramesTotal_
+            : 0);
+    if (srcFrames > 0 && dstFrames == 0) {
+        dstFrames = 1;
+    }
+    resampleInputFramesTotal_ += srcFrames;
+    resampleOutputFramesTotal_ += dstFrames;
     uint32_t channels = input.channelCount;
 
     AudioBuffer output;

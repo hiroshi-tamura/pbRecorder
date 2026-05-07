@@ -431,6 +431,9 @@ void AsioCapture::convertAndDeliver(long bufferIndex) {
     QueryPerformanceFrequency(&freq);
     audioBuffer.timestamp = static_cast<int64_t>(
         (static_cast<double>(qpc.QuadPart) / freq.QuadPart) * 10000000.0);
+    const int64_t bufferDuration = static_cast<int64_t>(frames) * 10000000LL /
+                                   static_cast<int64_t>(sampleRate_ > 0 ? sampleRate_ : 48000.0);
+    audioBuffer.timestamp = std::max<int64_t>(0, audioBuffer.timestamp - bufferDuration);
 
     int16_t* dst = reinterpret_cast<int16_t*>(audioBuffer.data.data());
 
