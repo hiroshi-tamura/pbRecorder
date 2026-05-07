@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $InputPath,
 
-    [string] $FfmpegPath = "ffmpeg",
+    [string] $FfmpegPath = "",
 
     [string] $WorkDir = "",
 
@@ -10,6 +10,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if (-not $FfmpegPath) {
+    $cmd = Get-Command ffmpeg -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        throw "ffmpeg was not found on PATH. Pass -FfmpegPath to use a specific ffmpeg.exe."
+    }
+    $FfmpegPath = $cmd.Source
+}
 
 $inputFull = (Resolve-Path -LiteralPath $InputPath).Path
 if (-not $WorkDir) {
