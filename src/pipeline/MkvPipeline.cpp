@@ -65,35 +65,43 @@ bool MkvPipeline::initialize(const RecordingConfig& config, ID3D11Device* device
     d3dDevice_ = device;
     hasAudio_ = config_.recordAudio;
 
-    // Determine if AAC audio goes through SinkWriter
-    sinkWriterHasAudio_ = hasAudio_ && (config_.audio.codec == AudioCodec::AAC);
+    // MKV is muxed directly while recording. SinkWriter is kept only as the
+    // legacy fallback branch and is not used for normal live MKV output.
+    sinkWriterHasAudio_ = false;
 
-    // Generate temp .mp4 path from output path
-    tempMp4Path_ = config_.outputPath;
-    auto dotPos = tempMp4Path_.rfind(L'.');
-    if (dotPos != std::wstring::npos)
-        tempMp4Path_ = tempMp4Path_.substr(0, dotPos);
-    tempMp4Path_ += L".tmp.mp4";
+    if (useLiveMuxing()) {
+        h264Encoder_ = std::make_unique<H264MftEncoder>();
+        if (!h264Encoder_->initialize(config_, device)) {
+            reportError("Failed to initialize Media Foundation H.264 encoder");
+            return false;
+        }
+    } else {
+        // Generate temp .mp4 path from output path
+        tempMp4Path_ = config_.outputPath;
+        auto dotPos = tempMp4Path_.rfind(L'.');
+        if (dotPos != std::wstring::npos)
+            tempMp4Path_ = tempMp4Path_.substr(0, dotPos);
+        tempMp4Path_ += L".tmp.mp4";
 
-    // Create SinkWriterPipeline for H.264 encoding
-    RecordingConfig swConfig = config_;
-    swConfig.outputPath = tempMp4Path_;
-    swConfig.container = ContainerFormat::MP4;
-    swConfig.video.codec = VideoCodec::H264;
-    swConfig.recordAudio = sinkWriterHasAudio_;
-    // If AAC audio goes through SinkWriter, keep audio settings as-is
+        // Create SinkWriterPipeline for H.264 encoding
+        RecordingConfig swConfig = config_;
+        swConfig.outputPath = tempMp4Path_;
+        swConfig.container = ContainerFormat::MP4;
+        swConfig.video.codec = VideoCodec::H264;
+        swConfig.recordAudio = sinkWriterHasAudio_;
 
-    sinkWriter_ = std::make_unique<SinkWriterPipeline>();
-    sinkWriter_->setErrorCallback([this](const std::string& msg) {
-        reportError("SinkWriter: " + msg);
-    });
+        sinkWriter_ = std::make_unique<SinkWriterPipeline>();
+        sinkWriter_->setErrorCallback([this](const std::string& msg) {
+            reportError("SinkWriter: " + msg);
+        });
 
-    if (!sinkWriter_->initialize(swConfig, device)) {
-        reportError("Failed to initialize internal SinkWriter for H.264 encoding");
-        return false;
+        if (!sinkWriter_->initialize(swConfig, device)) {
+            reportError("Failed to initialize internal SinkWriter for H.264 encoding");
+            return false;
+        }
     }
 
-    // Initialize non-AAC audio encoder if needed
+    // Initialize audio encoder if needed
     if (hasAudio_ && !sinkWriterHasAudio_) {
         if (!initializeAudioEncoder()) {
             reportError("Failed to initialize audio encoder");
@@ -111,9 +119,16 @@ bool MkvPipeline::start() {
         return false;
     }
 
-    if (!sinkWriter_->start()) {
-        reportError("SinkWriter start failed");
-        return false;
+    if (useLiveMuxing()) {
+        if (!initializeMkvWriter()) {
+            reportError("Failed to initialize live MKV writer");
+            return false;
+        }
+    } else {
+        if (!sinkWriter_->start()) {
+            reportError("SinkWriter start failed");
+            return false;
+        }
     }
 
     recording_ = true;
@@ -126,13 +141,32 @@ bool MkvPipeline::stop() {
     }
     recording_ = false;
 
-    // Stop SinkWriter (finalizes temp .mp4)
+    if (useLiveMuxing()) {
+        drainAudioEncoder();
+
+        std::vector<EncodedVideoPacket> remaining;
+        if (h264Encoder_) {
+            h264Encoder_->drain(remaining);
+            writeEncodedVideoPackets(remaining);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mkvWriteMutex_);
+            if (spsPpsExtracted_) {
+                patchVideoCodecPrivate();
+            }
+            finalizeMkvFile();
+        }
+
+        if (h264Encoder_) {
+            h264Encoder_->shutdown();
+        }
+        return true;
+    }
+
+    // Stop SinkWriter (finalizes temp .mp4), then remux temp .mp4 to final .mkv.
     sinkWriter_->stop();
-
-    // Remux temp .mp4 → final .mkv
     bool result = remuxToMkv();
-
-    // Delete temp .mp4
     DeleteFileW(tempMp4Path_.c_str());
 
     return result;
@@ -143,7 +177,14 @@ bool MkvPipeline::writeVideoFrame(const VideoFrame& frame) {
         return false;
     }
 
-    // Forward to SinkWriter for H.264 encoding
+    if (useLiveMuxing()) {
+        std::vector<EncodedVideoPacket> packets;
+        if (!h264Encoder_ || !h264Encoder_->encodeFrame(frame, packets)) {
+            return false;
+        }
+        return writeEncodedVideoPackets(packets);
+    }
+
     return sinkWriter_->writeVideoFrame(frame);
 }
 
@@ -152,12 +193,7 @@ bool MkvPipeline::writeAudioSamples(const AudioBuffer& buffer) {
         return false;
     }
 
-    // AAC goes through SinkWriter
-    if (sinkWriterHasAudio_) {
-        return sinkWriter_->writeAudioSamples(buffer);
-    }
-
-    // Non-AAC: encode and buffer
+    // Encode and mux live.
     int64_t expected = -1;
     firstAudioTimestamp_.compare_exchange_strong(expected, buffer.timestamp);
 
@@ -170,6 +206,18 @@ bool MkvPipeline::writeAudioSamples(const AudioBuffer& buffer) {
         std::lock_guard<std::mutex> lock(encodeMutex_);
 
         switch (config_.audio.codec) {
+        case AudioCodec::AAC: {
+            std::vector<EncodedAudioPacket> aacPackets;
+            if (!aacEncoder_ || !aacEncoder_->encode(buffer, aacPackets)) return false;
+            for (auto& packet : aacPackets) {
+                if (!writeAudioPacketLive(std::move(packet.data),
+                                          packet.timestampMs,
+                                          packet.durationMs)) {
+                    return false;
+                }
+            }
+            return true;
+        }
         case AudioCodec::Opus:
             if (!encodeAudioOpus(buffer, packets)) return false;
             break;
@@ -185,13 +233,63 @@ bool MkvPipeline::writeAudioSamples(const AudioBuffer& buffer) {
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(audioBufferMutex_);
-        for (auto& pkt : packets) {
+    for (auto& pkt : packets) {
+        if (useLiveMuxing()) {
+            if (!writeAudioPacketLive(std::move(pkt), tsMs)) {
+                return false;
+            }
+        } else {
+            std::lock_guard<std::mutex> lock(audioBufferMutex_);
             bufferedAudioPackets_.push_back({std::move(pkt), tsMs});
         }
     }
 
+    return true;
+}
+
+bool MkvPipeline::useLiveMuxing() const
+{
+    return !sinkWriterHasAudio_;
+}
+
+bool MkvPipeline::writeEncodedVideoPackets(const std::vector<EncodedVideoPacket>& packets)
+{
+    std::lock_guard<std::mutex> lock(mkvWriteMutex_);
+    for (const auto& packet : packets) {
+        if (packet.data.empty()) {
+            continue;
+        }
+
+        if (packet.keyframe && !spsPpsExtracted_) {
+            extractSpsPps(packet.data.data(), packet.data.size());
+            if (spsPpsExtracted_) {
+                patchVideoCodecPrivate();
+            }
+        }
+
+        writeClusterData(VIDEO_TRACK_NUM,
+                         packet.timestampMs,
+                         packet.data.data(),
+                         packet.data.size(),
+                         packet.keyframe);
+        if (packet.durationMs > 0) {
+            maxTimestampMs_ = std::max(maxTimestampMs_, packet.timestampMs + packet.durationMs);
+        }
+    }
+    return true;
+}
+
+bool MkvPipeline::writeAudioPacketLive(std::vector<uint8_t> data, int64_t timestampMs, int64_t durationMs)
+{
+    if (data.empty()) {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> lock(mkvWriteMutex_);
+    writeClusterData(AUDIO_TRACK_NUM, timestampMs, data.data(), data.size(), false);
+    if (durationMs > 0) {
+        maxTimestampMs_ = std::max(maxTimestampMs_, timestampMs + durationMs);
+    }
     return true;
 }
 
@@ -207,7 +305,9 @@ int64_t MkvPipeline::getDurationMs() const {
     if (sinkWriter_) {
         return sinkWriter_->getDurationMs();
     }
-    return 0;
+
+    std::lock_guard<std::mutex> lock(mkvWriteMutex_);
+    return maxTimestampMs_;
 }
 
 int64_t MkvPipeline::getFileSize() const {
@@ -215,15 +315,34 @@ int64_t MkvPipeline::getFileSize() const {
     if (sinkWriter_) {
         return sinkWriter_->getFileSize();
     }
-    return 0;
+
+    HANDLE hFile = CreateFileW(config_.outputPath.c_str(),
+                               GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr,
+                               OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    LARGE_INTEGER fileSize;
+    BOOL ok = GetFileSizeEx(hFile, &fileSize);
+    CloseHandle(hFile);
+
+    return ok ? fileSize.QuadPart : 0;
 }
 
 // ============================================================================
-// Audio Encoder (Opus/Vorbis — AAC goes through SinkWriter)
+// Audio Encoder
 // ============================================================================
 
 bool MkvPipeline::initializeAudioEncoder() {
     switch (config_.audio.codec) {
+    case AudioCodec::AAC:
+        aacEncoder_ = std::make_unique<AacMftEncoder>();
+        return aacEncoder_->initialize(config_);
     case AudioCodec::Opus:
         return initializeOpusEncoder();
     case AudioCodec::Vorbis:
@@ -399,7 +518,71 @@ bool MkvPipeline::encodeAudioVorbis(const AudioBuffer& buffer,
     return true;
 }
 
+bool MkvPipeline::drainAudioEncoder()
+{
+    if (!hasAudio_ || sinkWriterHasAudio_) {
+        return true;
+    }
+
+    if (config_.audio.codec == AudioCodec::AAC && aacEncoder_) {
+        std::vector<EncodedAudioPacket> packets;
+        if (!aacEncoder_->drain(packets)) {
+            return false;
+        }
+        for (auto& packet : packets) {
+            if (!writeAudioPacketLive(std::move(packet.data),
+                                      packet.timestampMs,
+                                      packet.durationMs)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (config_.audio.codec == AudioCodec::Opus && !opusResidualBuffer_.empty()) {
+        const int channels = config_.audio.channelCount;
+        const int frameSamplesTotal = opusFrameSamples_ * channels;
+        opusResidualBuffer_.resize(frameSamplesTotal, 0.0f);
+
+        std::vector<uint8_t> encodedBuf(4000);
+        int encoded = opus_encode_float(
+            opusEncoder_,
+            opusResidualBuffer_.data(),
+            opusFrameSamples_,
+            encodedBuf.data(),
+            static_cast<opus_int32>(encodedBuf.size()));
+
+        if (encoded > 0) {
+            encodedBuf.resize(encoded);
+            const int64_t tsMs = maxTimestampMs_;
+            writeAudioPacketLive(std::move(encodedBuf), tsMs);
+        }
+        opusResidualBuffer_.clear();
+    }
+
+    if (config_.audio.codec == AudioCodec::Vorbis && vorbisDsp_ && vorbisBlock_) {
+        vorbis_analysis_wrote(vorbisDsp_, 0);
+        while (vorbis_analysis_blockout(vorbisDsp_, vorbisBlock_) == 1) {
+            vorbis_analysis(vorbisBlock_, nullptr);
+            vorbis_bitrate_addblock(vorbisBlock_);
+
+            ogg_packet op;
+            while (vorbis_bitrate_flushpacket(vorbisDsp_, &op)) {
+                std::vector<uint8_t> packet(op.packet, op.packet + op.bytes);
+                writeAudioPacketLive(std::move(packet), maxTimestampMs_);
+            }
+        }
+    }
+
+    return true;
+}
+
 void MkvPipeline::shutdownAudioEncoder() {
+    if (aacEncoder_) {
+        aacEncoder_->shutdown();
+        aacEncoder_.reset();
+    }
+
     if (opusEncoder_) {
         opus_encoder_destroy(opusEncoder_);
         opusEncoder_ = nullptr;
@@ -1171,8 +1354,8 @@ void MkvPipeline::writeClusterData(uint8_t trackNum, int64_t timestampMs,
         *dataBuf,
         LACING_NONE
     );
-    simpleBlock.SetKeyframe(keyframe);
-    simpleBlock.SetDiscardable(!keyframe);
+    simpleBlock.SetKeyframe(trackNum == AUDIO_TRACK_NUM || keyframe);
+    simpleBlock.SetDiscardable(false);
 }
 
 void MkvPipeline::flushCurrentCluster() {

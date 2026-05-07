@@ -1,6 +1,7 @@
 build/
 build*/
 release/
+dist/
 debug_capture.log
 .serena/
 *.user

@@ -20,6 +20,7 @@ Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Dup
 ### 映像
 - **コーデック**: H.264, WMV
 - **ハードウェアエンコード**: Media Foundation経由のGPUエンコード対応
+- **リアルタイム H.264 MP4**: Media Foundation の fragmented MP4 出力を使い、録画中にデータを確定しながら書き出して停止時の確定処理を軽くします
 - **H.264オプション**: プロファイル (Baseline/Main/High), レベル (Auto/4.0〜5.1)
 - **フレームレート**: 最大240fps
 - **ビットレート**: 任意に設定可能（デフォルト8Mbps）
@@ -32,7 +33,7 @@ Windows向けの高機能スクリーンレコーダーです。DXGI Desktop Dup
 
 ### コンテナ形式
 - **MP4** (.mp4) — H.264 + AAC/MP3
-- **MKV** (.mkv) — H.264 + Opus/Vorbis/PCM（libmatroskaによるネイティブ実装）
+- **MKV** (.mkv) — H.264 + AAC/Opus/Vorbis/PCM（libmatroskaによるネイティブ実装）
 - **WMV** (.wmv) — WMV + WMA
 
 ### その他
@@ -170,6 +171,18 @@ cmake .. -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH="<Qt6のパス>" -DASIO_SDK_DI
 
 サードパーティライブラリ（libebml, libmatroska, libogg, libvorbis, libopus）はCMakeのFetchContentで自動的にダウンロード・ビルドされます。
 
+### スモークテスト
+
+`BUILD_TESTING=ON` の場合、軽量な CTest スモークテストが登録されます。
+
+```bash
+ctest --test-dir build -C Release --output-on-failure
+```
+
+テストでは `pbRecorder-cli --help` によるCLI起動確認と、`pbRecorder.exe --ui-screenshot <path>` によるGUI初期画面のスクリーンショット生成を確認します。GUIテストは、アプリがハングした場合や画像が作成されない場合に失敗します。
+
+GitHub Actions でも、push と pull request ごとに同じ Windows ビルドとスモークテストを実行します。
+
 ## 技術スタック
 
 - **UI**: Qt 6 (Widgets)
@@ -188,9 +201,9 @@ pbRecorderは**特許・ライセンス的にクリーンな構成**を採用し
 - H.264/AACのコーデック実装はOS内蔵のものを利用するため、本アプリにコーデックライブラリは含まれていません
 - **FFmpegやx264等のGPL/LGPLライブラリは一切使用していません**
 
-### MKVコンテナ (H.264 + Opus/Vorbis/PCM)
+### MKVコンテナ (H.264 + AAC/Opus/Vorbis/PCM)
 - 映像: Media Foundation でraw H.264 NALUを生成し、**libmatroska/libebml** でMKVコンテナに直接書き込み
-- 音声: **libopus** (BSD) または **libvorbis** (BSD)
+- 音声: AACはWindows標準AAC MFTを直接使用、Opusは**libopus** (BSD)、Vorbisは**libvorbis** (BSD)
 - コンテナ: **libmatroska** (LGPL) + **libebml** (LGPL)
 - PCM（無圧縮）での録音も可能
 

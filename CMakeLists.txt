@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.4.1 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.5.0 LANGUAGES C CXX)
+
+include(CTest)
+set(PBRECORDER_BUILD_TESTING ${BUILD_TESTING})
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +15,12 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 # Qt6
 find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui Multimedia)
+
+get_target_property(QT_CORE_LOCATION Qt6::Core IMPORTED_LOCATION_RELEASE)
+if(NOT QT_CORE_LOCATION)
+    get_target_property(QT_CORE_LOCATION Qt6::Core IMPORTED_LOCATION)
+endif()
+get_filename_component(QT_BIN_DIR "${QT_CORE_LOCATION}" DIRECTORY)
 
 # Windows SDK libraries
 set(WIN_LIBS
@@ -157,6 +166,8 @@ set(AUDIO_SOURCES
 )
 
 set(PIPELINE_SOURCES
+    src/pipeline/AacMftEncoder.cpp
+    src/pipeline/H264MftEncoder.cpp
     src/pipeline/SinkWriterPipeline.cpp
     src/pipeline/MkvPipeline.cpp
 )
@@ -304,3 +315,30 @@ qt_generate_deploy_app_script(
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
 install(SCRIPT ${deploy_script})
+
+if(PBRECORDER_BUILD_TESTING)
+    add_test(
+        NAME cli_help
+        COMMAND $<TARGET_FILE:pbRecorder-cli> --help
+    )
+    set_tests_properties(cli_help PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${QT_BIN_DIR}"
+        PASS_REGULAR_EXPRESSION "pbRecorder CLI"
+        TIMEOUT 20
+    )
+
+    if(WIN32)
+        add_test(
+            NAME ui_screenshot
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/ci/verify-ui-screenshot.ps1"
+                -ExePath "$<TARGET_FILE:${PROJECT_NAME}>"
+                -OutputPath "${CMAKE_BINARY_DIR}/ui-screenshot.png"
+                -TimeoutSeconds 20
+        )
+        set_tests_properties(ui_screenshot PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${QT_BIN_DIR}"
+            TIMEOUT 30
+        )
+    endif()
+endif()

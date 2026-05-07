@@ -13,6 +13,13 @@
 
 namespace pb {
 
+namespace {
+
+constexpr GUID PB_MF_MPEG4SINK_MIN_FRAGMENT_DURATION =
+    {0xa30b570c, 0x8efd, 0x45e8, {0x94, 0xfe, 0x27, 0xc8, 0x4b, 0x5b, 0xdf, 0xf6}};
+
+} // namespace
+
 // ============================================================================
 // Construction / Destruction
 // ============================================================================
@@ -77,12 +84,14 @@ bool SinkWriterPipeline::initialize(const RecordingConfig& config, ID3D11Device*
                         "Failed to set D3D manager on SinkWriter");
         }
 
-        // Create Sink Writer from output URL
-        PB_CHECK_HR(MFCreateSinkWriterFromURL(config_.outputPath.c_str(),
-                                               nullptr,
-                                               attributes.Get(),
-                                               &sinkWriter_),
-                    "Failed to create SinkWriter from URL");
+        if (config_.video.realtimeEncode) {
+            PB_CHECK_HR(attributes->SetUINT32(MF_LOW_LATENCY, TRUE),
+                        "Failed to set low latency mode");
+        }
+
+        if (!createSinkWriter(attributes.Get())) {
+            return false;
+        }
 
         // Configure video stream (output then input)
         if (!configureVideoOutput()) return false;
@@ -154,6 +163,28 @@ bool SinkWriterPipeline::stop() {
         reportError(std::string("Stop failed: ") + e.what());
         return false;
     }
+}
+
+bool SinkWriterPipeline::createSinkWriter(IMFAttributes* attributes) {
+    fixedOutputStreams_ = false;
+
+    if (config_.container == ContainerFormat::MP4 &&
+        config_.video.codec == VideoCodec::H264 &&
+        config_.video.realtimeEncode) {
+        // Ask the built-in MP4 sink writer for fragmented MP4 output. This is
+        // the closest Media Foundation equivalent to OBS-style recording while
+        // keeping the current no-FFmpeg/no-GPL architecture. Older runtimes may
+        // ignore it and still produce a normal MP4.
+        attributes->SetGUID(MF_TRANSCODE_CONTAINERTYPE, MFTranscodeContainerType_FMPEG4);
+        attributes->SetUINT64(PB_MF_MPEG4SINK_MIN_FRAGMENT_DURATION, 10000000ULL);
+    }
+
+    PB_CHECK_HR(MFCreateSinkWriterFromURL(config_.outputPath.c_str(),
+                                           nullptr,
+                                           attributes,
+                                           &sinkWriter_),
+                "Failed to create SinkWriter from URL");
+    return true;
 }
 
 bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
@@ -418,7 +449,11 @@ bool SinkWriterPipeline::writeAudioSamples(const AudioBuffer& buffer) {
                        / static_cast<int64_t>(buffer.sampleRate);
         }
 
-        DWORD dataSize = static_cast<DWORD>(buffer.data.size());
+        std::vector<uint8_t> convertedAudio = convertAudioInput(buffer);
+        const std::vector<uint8_t>& audioData =
+            convertedAudio.empty() ? buffer.data : convertedAudio;
+
+        DWORD dataSize = static_cast<DWORD>(audioData.size());
         if (dataSize == 0) {
             return true; // Nothing to write
         }
@@ -432,7 +467,7 @@ bool SinkWriterPipeline::writeAudioSamples(const AudioBuffer& buffer) {
         BYTE* bufferPtr = nullptr;
         PB_CHECK_HR(mediaBuffer->Lock(&bufferPtr, nullptr, nullptr),
                     "Failed to lock audio buffer");
-        memcpy(bufferPtr, buffer.data.data(), dataSize);
+        memcpy(bufferPtr, audioData.data(), dataSize);
         PB_CHECK_HR(mediaBuffer->Unlock(), "Failed to unlock audio buffer");
         PB_CHECK_HR(mediaBuffer->SetCurrentLength(dataSize),
                     "Failed to set audio buffer length");
@@ -501,7 +536,7 @@ int64_t SinkWriterPipeline::getFileSize() const {
 // Private helpers
 // ============================================================================
 
-bool SinkWriterPipeline::configureVideoOutput() {
+bool SinkWriterPipeline::createVideoOutputType(IMFMediaType** type) {
     ComPtr<IMFMediaType> outputType;
     PB_CHECK_HR(MFCreateMediaType(&outputType), "Failed to create video output type");
 
@@ -551,8 +586,21 @@ bool SinkWriterPipeline::configureVideoOutput() {
     PB_CHECK_HR(outputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive),
                 "Failed to set interlace mode");
 
-    PB_CHECK_HR(sinkWriter_->AddStream(outputType.Get(), &videoStreamIndex_),
-                "Failed to add video output stream");
+    *type = outputType.Detach();
+
+    return true;
+}
+
+bool SinkWriterPipeline::configureVideoOutput() {
+    ComPtr<IMFMediaType> outputType;
+    if (!createVideoOutputType(&outputType)) {
+        return false;
+    }
+
+    if (!fixedOutputStreams_) {
+        PB_CHECK_HR(sinkWriter_->AddStream(outputType.Get(), &videoStreamIndex_),
+                    "Failed to add video output stream");
+    }
 
     return true;
 }
@@ -591,7 +639,7 @@ bool SinkWriterPipeline::configureVideoInput() {
     return true;
 }
 
-bool SinkWriterPipeline::configureAudioOutput() {
+bool SinkWriterPipeline::createAudioOutputType(IMFMediaType** type) {
     ComPtr<IMFMediaType> outputType;
     PB_CHECK_HR(MFCreateMediaType(&outputType), "Failed to create audio output type");
 
@@ -628,7 +676,7 @@ bool SinkWriterPipeline::configureAudioOutput() {
         break;
 
     case AudioCodec::WMA:
-        PB_CHECK_HR(outputType->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_WMAudioV9),
+        PB_CHECK_HR(outputType->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_WMAudioV8),
                     "Failed to set WMA subtype");
         PB_CHECK_HR(outputType->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, sampleRate),
                     "Failed to set WMA sample rate");
@@ -644,8 +692,21 @@ bool SinkWriterPipeline::configureAudioOutput() {
         return false;
     }
 
-    PB_CHECK_HR(sinkWriter_->AddStream(outputType.Get(), &audioStreamIndex_),
-                "Failed to add audio output stream");
+    *type = outputType.Detach();
+
+    return true;
+}
+
+bool SinkWriterPipeline::configureAudioOutput() {
+    ComPtr<IMFMediaType> outputType;
+    if (!createAudioOutputType(&outputType)) {
+        return false;
+    }
+
+    if (!fixedOutputStreams_) {
+        PB_CHECK_HR(sinkWriter_->AddStream(outputType.Get(), &audioStreamIndex_),
+                    "Failed to add audio output stream");
+    }
 
     return true;
 }
@@ -662,7 +723,7 @@ bool SinkWriterPipeline::configureAudioInput() {
 
     int sampleRate   = config_.audio.sampleRate;
     int channels     = config_.audio.channelCount;
-    int bitsPerSample = config_.audio.bitsPerSample;
+    int bitsPerSample = requiresPcm16AudioInput() ? 16 : config_.audio.bitsPerSample;
     int blockAlign   = channels * (bitsPerSample / 8);
 
     PB_CHECK_HR(inputType->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, sampleRate),
@@ -685,6 +746,40 @@ bool SinkWriterPipeline::configureAudioInput() {
                 "Failed to set audio input media type");
 
     return true;
+}
+
+bool SinkWriterPipeline::requiresPcm16AudioInput() const
+{
+    return config_.audio.codec == AudioCodec::WMA;
+}
+
+std::vector<uint8_t> SinkWriterPipeline::convertAudioInput(const AudioBuffer& buffer) const
+{
+    if (!requiresPcm16AudioInput()) {
+        return {};
+    }
+
+    if (buffer.bitsPerSample == 16) {
+        return {};
+    }
+
+    const size_t sampleValues = static_cast<size_t>(buffer.sampleCount) * buffer.channelCount;
+    std::vector<uint8_t> converted(sampleValues * sizeof(int16_t));
+    int16_t* dst = reinterpret_cast<int16_t*>(converted.data());
+
+    if (buffer.bitsPerSample == 32) {
+        const float* src = reinterpret_cast<const float*>(buffer.data.data());
+        const size_t count = std::min(sampleValues, buffer.data.size() / sizeof(float));
+        for (size_t i = 0; i < count; ++i) {
+            const float clamped = std::clamp(src[i], -1.0f, 1.0f);
+            dst[i] = static_cast<int16_t>(clamped * 32767.0f);
+        }
+        return converted;
+    }
+
+    const size_t copyBytes = std::min(converted.size(), buffer.data.size());
+    std::memcpy(converted.data(), buffer.data.data(), copyBytes);
+    return converted;
 }
 
 bool SinkWriterPipeline::setupDXGIDeviceManager() {
@@ -712,36 +807,35 @@ void SinkWriterPipeline::applyEncoderSettings() {
     // Additional encoder tuning via ICodecAPI is not available on MinGW,
     // so we rely on the SinkWriter-level controls.
 
-    if (!config_.video.realtimeEncode) {
-        // For non-realtime encoding, try to set encoder parameters via attributes
-        ComPtr<IMFAttributes> encoderParams;
-        HRESULT hr = MFCreateAttributes(&encoderParams, 1);
-        if (SUCCEEDED(hr)) {
-            // CODECAPI_AVLowLatencyMode GUID
-            static const GUID AVLowLatencyMode =
-                {0x9c27891a, 0xed7a, 0x40e1, {0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee}};
-            encoderParams->SetUINT32(AVLowLatencyMode, FALSE);
+    ComPtr<IMFAttributes> encoderParams;
+    HRESULT hr = MFCreateAttributes(&encoderParams, 2);
+    if (FAILED(hr)) {
+        return;
+    }
 
-            // Re-set input media type with encoder parameters
-            // Create input type again
-            ComPtr<IMFMediaType> inputType;
-            hr = MFCreateMediaType(&inputType);
-            if (SUCCEEDED(hr)) {
-                inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-                inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-                MFSetAttributeSize(inputType.Get(), MF_MT_FRAME_SIZE,
-                                   config_.video.width, config_.video.height);
-                MFSetAttributeRatio(inputType.Get(), MF_MT_FRAME_RATE,
-                                    config_.video.fps, 1);
-                MFSetAttributeRatio(inputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-                inputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    const UINT32 realtime = config_.video.realtimeEncode ? TRUE : FALSE;
+    encoderParams->SetUINT32(CODECAPI_AVLowLatencyMode, realtime);
+    encoderParams->SetUINT32(CODECAPI_AVEncCommonRealTime, realtime);
 
-                sinkWriter_->SetInputMediaType(videoStreamIndex_,
-                                                inputType.Get(),
-                                                encoderParams.Get());
-                // Silently ignore failure - encoding will still work with defaults
-            }
-        }
+    ComPtr<IMFMediaType> inputType;
+    hr = MFCreateMediaType(&inputType);
+    if (FAILED(hr)) {
+        return;
+    }
+    inputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    inputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    MFSetAttributeSize(inputType.Get(), MF_MT_FRAME_SIZE,
+                       config_.video.width, config_.video.height);
+    MFSetAttributeRatio(inputType.Get(), MF_MT_FRAME_RATE,
+                        config_.video.fps, 1);
+    MFSetAttributeRatio(inputType.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    inputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+
+    hr = sinkWriter_->SetInputMediaType(videoStreamIndex_,
+                                        inputType.Get(),
+                                        encoderParams.Get());
+    if (FAILED(hr)) {
+        reportError("Realtime encoder settings were not accepted: " + hrToString(hr));
     }
 }
 
@@ -763,6 +857,7 @@ void SinkWriterPipeline::releaseResources() {
     gpuInputWidth_ = 0;
     gpuInputHeight_ = 0;
     initialized_ = false;
+    fixedOutputStreams_ = false;
 }
 
 } // namespace pb

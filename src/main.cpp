@@ -15,7 +15,7 @@ int main(int argc, char* argv[]) {
 
     QApplication app(argc, argv);
     app.setApplicationName("pbRecorder");
-    app.setApplicationVersion("0.4.1");
+    app.setApplicationVersion("0.5.0");
     app.setOrganizationName("pbRecorder");
 
     app.setStyle(QStyleFactory::create("Fusion"));

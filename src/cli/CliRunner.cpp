@@ -498,6 +498,7 @@ int CliRunner::run(const QStringList& args) {
         config.useInputAudio = false;
     } else {
         auto wasapiDevices = pb::WasapiCapture::enumerateDevices();
+        auto asioDevices = pb::AsioCapture::enumerateDevices();
 
         // Split by type
         std::vector<pb::AudioDeviceInfo> renderDevices, captureDevices;
@@ -505,6 +506,12 @@ int CliRunner::run(const QStringList& args) {
             if (d.type == pb::AudioDeviceType::WASAPI_Render)
                 renderDevices.push_back(d);
             else if (d.type == pb::AudioDeviceType::WASAPI_Capture)
+                captureDevices.push_back(d);
+        }
+        for (const auto& d : asioDevices) {
+            if (d.type == pb::AudioDeviceType::ASIO_Output)
+                renderDevices.push_back(d);
+            else if (d.type == pb::AudioDeviceType::ASIO)
                 captureDevices.push_back(d);
         }
 
@@ -535,8 +542,16 @@ int CliRunner::run(const QStringList& args) {
         if (!asioChannels.isEmpty()) {
             QStringList parts = asioChannels.split('-');
             if (parts.size() == 2) {
-                config.outputAudioDevice.asioStartChannel = parts[0].toInt();
-                config.outputAudioDevice.asioEndChannel = parts[1].toInt();
+                int startChannel = std::max(0, parts[0].toInt() - 1);
+                int endChannel = std::max(startChannel, parts[1].toInt() - 1);
+                if (config.useOutputAudio) {
+                    config.outputAudioDevice.asioStartChannel = startChannel;
+                    config.outputAudioDevice.asioEndChannel = endChannel;
+                }
+                if (config.useInputAudio) {
+                    config.inputAudioDevice.asioStartChannel = startChannel;
+                    config.inputAudioDevice.asioEndChannel = endChannel;
+                }
             }
         }
 
@@ -583,18 +598,27 @@ int CliRunner::run(const QStringList& args) {
     QString errorMsg;
 
     session.setErrorCallback([&](const std::string& error) {
-        errorMsg = QString::fromStdString(error);
+        if (!errorMsg.isEmpty()) {
+            errorMsg += "\n";
+        }
+        errorMsg += QString::fromStdString(error);
         errorOccurred.store(true);
         g_stopRequested.store(true);
     });
 
     if (!session.initialize(config)) {
         err() << "Error: failed to initialize recording session" << Qt::endl;
+        if (!errorMsg.isEmpty()) {
+            err() << "Detail: " << errorMsg << Qt::endl;
+        }
         return 2;
     }
 
     if (!session.start()) {
         err() << "Error: failed to start recording" << Qt::endl;
+        if (!errorMsg.isEmpty()) {
+            err() << "Detail: " << errorMsg << Qt::endl;
+        }
         return 2;
     }
 

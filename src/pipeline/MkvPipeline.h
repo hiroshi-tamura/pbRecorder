@@ -1,6 +1,8 @@
 #pragma once
 
 #include "pipeline/IRecordingPipeline.h"
+#include "pipeline/AacMftEncoder.h"
+#include "pipeline/H264MftEncoder.h"
 
 #include <mfapi.h>
 #include <mfidl.h>
@@ -70,6 +72,10 @@ private:
 
     // ---- Remux: temp .mp4 → .mkv ----
     bool remuxToMkv();
+    bool useLiveMuxing() const;
+    bool writeEncodedVideoPackets(const std::vector<EncodedVideoPacket>& packets);
+    bool writeAudioPacketLive(std::vector<uint8_t> data, int64_t timestampMs, int64_t durationMs = 0);
+    bool drainAudioEncoder();
 
     // ---- MKV muxing (libmatroska) ----
     bool initializeMkvWriter();
@@ -104,9 +110,11 @@ private:
 
     // ---- Internal SinkWriter for H.264 encoding ----
     std::unique_ptr<SinkWriterPipeline> sinkWriter_;
+    std::unique_ptr<H264MftEncoder> h264Encoder_;
+    std::unique_ptr<AacMftEncoder> aacEncoder_;
     ComPtr<ID3D11Device> d3dDevice_;
     std::wstring tempMp4Path_;
-    bool sinkWriterHasAudio_ = false; // true when AAC audio goes through SinkWriter
+    bool sinkWriterHasAudio_ = false; // true only for the legacy remux fallback
 
     // ---- Audio buffer (for Opus/Vorbis/PCM — not through SinkWriter) ----
     struct AudioPacket {
@@ -175,6 +183,7 @@ private:
 
     // ---- Thread safety ----
     std::mutex encodeMutex_;
+    mutable std::mutex mkvWriteMutex_;
 
     ErrorCallback errorCallback_;
 };

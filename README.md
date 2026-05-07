@@ -20,6 +20,7 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 ### Video
 - **Codecs**: H.264, WMV
 - **Hardware encoding**: GPU encoding via Media Foundation
+- **Realtime H.264 MP4**: Uses Media Foundation fragmented MP4 output to keep recording data committed during capture and reduce stop-time finalization work
 - **H.264 options**: Profile (Baseline/Main/High), Level (Auto/4.0–5.1)
 - **Frame rate**: Up to 240fps
 - **Bitrate**: Configurable (default 8 Mbps)
@@ -32,7 +33,7 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 ### Container Formats
 - **MP4** (.mp4) — H.264 + AAC/MP3
-- **MKV** (.mkv) — H.264 + Opus/Vorbis/PCM (native implementation via libmatroska)
+- **MKV** (.mkv) — H.264 + AAC/Opus/Vorbis/PCM (native implementation via libmatroska)
 - **WMV** (.wmv) — WMV + WMA
 
 ### Other
@@ -170,6 +171,18 @@ This produces two executables:
 
 Third-party libraries (libebml, libmatroska, libogg, libvorbis, libopus) are automatically downloaded and built via CMake FetchContent.
 
+### Smoke Tests
+
+The project registers lightweight CTest smoke tests when `BUILD_TESTING=ON`:
+
+```bash
+ctest --test-dir build -C Release --output-on-failure
+```
+
+The tests verify CLI startup with `pbRecorder-cli --help` and GUI startup with `pbRecorder.exe --ui-screenshot <path>`. The GUI test writes an initial-window screenshot and fails if the app hangs or the image is not created.
+
+GitHub Actions runs the same Windows build and smoke tests on pushes and pull requests.
+
 ## Tech Stack
 
 - **UI**: Qt 6 (Widgets)
@@ -188,9 +201,9 @@ pbRecorder uses a **patent and license-clean architecture**.
 - No codec libraries are bundled — uses OS-provided H.264/AAC encoders
 - **No FFmpeg, x264, or other GPL/LGPL codec libraries**
 
-### MKV (H.264 + Opus/Vorbis/PCM)
+### MKV (H.264 + AAC/Opus/Vorbis/PCM)
 - Video: Media Foundation generates raw H.264 NALUs, written directly to MKV via **libmatroska/libebml**
-- Audio: **libopus** (BSD) or **libvorbis** (BSD)
+- Audio: AAC uses the Windows AAC MFT directly; Opus uses **libopus** (BSD), Vorbis uses **libvorbis** (BSD)
 - Container: **libmatroska** (LGPL) + **libebml** (LGPL)
 - PCM (uncompressed) recording also available
 

@@ -8,6 +8,9 @@
 #include "pipeline/SinkWriterPipeline.h"
 #include "pipeline/MkvPipeline.h"
 
+#include <algorithm>
+#include <cstring>
+
 namespace pb {
 
 RecordingSession::RecordingSession() = default;
@@ -106,8 +109,24 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
             IAudioSource* primaryAudio = outputAudioSource_ ? outputAudioSource_.get()
                                                              : inputAudioSource_.get();
             sourceSampleRate_ = primaryAudio->getSampleRate();
-            config_.audio.channelCount = primaryAudio->getChannelCount();
+            sourceChannelCount_ = primaryAudio->getChannelCount();
+            config_.audio.channelCount = sourceChannelCount_;
             config_.audio.bitsPerSample = primaryAudio->getBitsPerSample();
+
+            uint32_t maxCodecChannels = 0;
+            switch (config_.audio.codec) {
+            case AudioCodec::AAC:  maxCodecChannels = 6; break;
+            case AudioCodec::MP3:
+            case AudioCodec::WMA:
+            case AudioCodec::Opus: maxCodecChannels = 2; break;
+            case AudioCodec::Vorbis:
+            case AudioCodec::PCM:
+            default: break;
+            }
+            if (maxCodecChannels > 0 && config_.audio.channelCount > static_cast<int>(maxCodecChannels)) {
+                config_.audio.channelCount = static_cast<int>(maxCodecChannels);
+            }
+            needsChannelMix_ = sourceChannelCount_ != static_cast<uint32_t>(config_.audio.channelCount);
 
             // Determine target sample rate for the encoder
             // Opus only supports 8000/12000/16000/24000/48000
@@ -357,6 +376,9 @@ void RecordingSession::audioWriterThread() {
             if (needsResample_) {
                 buffer = resampleBuffer(buffer, config_.audio.sampleRate);
             }
+            if (needsChannelMix_) {
+                buffer = normalizeAudioChannels(buffer, config_.audio.channelCount);
+            }
             if (!pipeline_->writeAudioSamples(buffer)) {
                 onError("Failed to write audio samples");
                 break;
@@ -369,6 +391,9 @@ void RecordingSession::audioWriterThread() {
     while (audioQueue_.tryPop(buffer, std::chrono::milliseconds(1))) {
         if (needsResample_) {
             buffer = resampleBuffer(buffer, config_.audio.sampleRate);
+        }
+        if (needsChannelMix_) {
+            buffer = normalizeAudioChannels(buffer, config_.audio.channelCount);
         }
         pipeline_->writeAudioSamples(buffer);
     }
@@ -469,6 +494,50 @@ AudioBuffer RecordingSession::resampleBuffer(const AudioBuffer& input, uint32_t 
     } else {
         // Unsupported bit depth — pass through unchanged
         return input;
+    }
+
+    return output;
+}
+
+AudioBuffer RecordingSession::normalizeAudioChannels(const AudioBuffer& input, uint32_t targetChannels) {
+    if (targetChannels == 0 || input.channelCount == targetChannels) {
+        return input;
+    }
+
+    const uint32_t srcChannels = input.channelCount;
+    const uint32_t bytesPerSample = input.bitsPerSample / 8;
+    if (srcChannels == 0 || bytesPerSample == 0) {
+        return input;
+    }
+
+    AudioBuffer output;
+    output.timestamp = input.timestamp;
+    output.channelCount = targetChannels;
+    output.sampleRate = input.sampleRate;
+    output.bitsPerSample = input.bitsPerSample;
+    output.sampleCount = input.sampleCount;
+    output.data.resize(static_cast<size_t>(input.sampleCount) * targetChannels * bytesPerSample);
+
+    const uint8_t* src = input.data.data();
+    uint8_t* dst = output.data.data();
+    const uint32_t copyChannels = std::min(srcChannels, targetChannels);
+
+    for (uint32_t frame = 0; frame < input.sampleCount; ++frame) {
+        const size_t srcFrame = static_cast<size_t>(frame) * srcChannels * bytesPerSample;
+        const size_t dstFrame = static_cast<size_t>(frame) * targetChannels * bytesPerSample;
+
+        for (uint32_t ch = 0; ch < copyChannels; ++ch) {
+            std::memcpy(dst + dstFrame + static_cast<size_t>(ch) * bytesPerSample,
+                        src + srcFrame + static_cast<size_t>(ch) * bytesPerSample,
+                        bytesPerSample);
+        }
+
+        for (uint32_t ch = copyChannels; ch < targetChannels; ++ch) {
+            const uint32_t sourceCh = copyChannels > 0 ? copyChannels - 1 : 0;
+            std::memcpy(dst + dstFrame + static_cast<size_t>(ch) * bytesPerSample,
+                        src + srcFrame + static_cast<size_t>(sourceCh) * bytesPerSample,
+                        bytesPerSample);
+        }
     }
 
     return output;

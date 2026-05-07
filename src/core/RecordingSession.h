@@ -72,8 +72,11 @@ private:
 
     // Audio resampling (when ASIO sample rate differs from pipeline target)
     AudioBuffer resampleBuffer(const AudioBuffer& input, uint32_t targetRate);
+    AudioBuffer normalizeAudioChannels(const AudioBuffer& input, uint32_t targetChannels);
     uint32_t sourceSampleRate_ = 0;
+    uint32_t sourceChannelCount_ = 0;
     bool needsResample_ = false;
+    bool needsChannelMix_ = false;
 };
 
 } // namespace pb

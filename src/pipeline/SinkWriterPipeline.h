@@ -11,6 +11,7 @@
 
 #include <mutex>
 #include <atomic>
+#include <vector>
 
 namespace pb {
 
@@ -36,9 +37,14 @@ private:
     bool configureAudioOutput();
     bool configureAudioInput();
     bool setupDXGIDeviceManager();
+    bool createSinkWriter(IMFAttributes* attributes);
+    bool createVideoOutputType(IMFMediaType** type);
+    bool createAudioOutputType(IMFMediaType** type);
     void applyEncoderSettings();
     bool writeVideoFrameSurface(const VideoFrame& frame, int64_t relativeTs, int64_t frameDuration);
     bool writeVideoFrameCpu(const VideoFrame& frame, int64_t relativeTs, int64_t frameDuration);
+    bool requiresPcm16AudioInput() const;
+    std::vector<uint8_t> convertAudioInput(const AudioBuffer& buffer) const;
 
     void reportError(const std::string& msg);
     void releaseResources();
@@ -56,6 +62,7 @@ private:
     std::atomic<bool> initialized_{false};
     bool mfStarted_ = false;
     bool hasAudio_ = false;
+    bool fixedOutputStreams_ = false;
 
     // Timing
     std::atomic<int64_t> firstVideoTimestamp_{-1};
