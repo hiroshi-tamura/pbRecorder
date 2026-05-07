@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.5.2 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.5.3 LANGUAGES C CXX)
 
 include(CTest)
 option(PBRECORDER_BUILD_TESTING "Build pbRecorder tests" ON)

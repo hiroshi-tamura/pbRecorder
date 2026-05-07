@@ -8,8 +8,8 @@
 #include <thread>
 #include <atomic>
 #include <memory>
+#include <functional>
 #include <string>
-#include <vector>
 
 namespace pb {
 
@@ -34,6 +34,7 @@ public:
     int64_t getFileSize() const;
 
     void setErrorCallback(ErrorCallback callback) { errorCallback_ = std::move(callback); }
+    void setAudioLevelCallback(std::function<void(float)> callback) { audioLevelCallback_ = std::move(callback); }
 
 private:
     void onVideoFrame(const VideoFrame& frame);
@@ -41,9 +42,7 @@ private:
     void onError(const std::string& error);
     int64_t normalizeTimestamp(int64_t timestamp100ns) const;
     int64_t normalizeMediaTimestamp(int64_t timestamp100ns) const;
-    bool mediaOriginReadyLocked() const;
-    bool shouldForceMediaOriginLocked() const;
-    void establishMediaOriginLocked();
+    void ensureMediaOriginLocked(int64_t timestamp100ns);
     void enqueueVideoFrameLocked(VideoFrame frame);
     void enqueueAudioBufferLocked(AudioBuffer buffer);
     bool writeProcessedAudioBuffer(AudioBuffer buffer);
@@ -80,10 +79,9 @@ private:
     int64_t firstVideoTimestamp_ = -1;
     int64_t firstAudioTimestamp_ = -1;
     std::mutex pauseMutex_;
-    std::vector<VideoFrame> pendingVideoFrames_;
-    std::vector<AudioBuffer> pendingAudioBuffers_;
 
     ErrorCallback errorCallback_;
+    std::function<void(float)> audioLevelCallback_;
     ID3D11Device* device_ = nullptr;
 
     // Audio resampling (when ASIO sample rate differs from pipeline target)

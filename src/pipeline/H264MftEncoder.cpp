@@ -125,7 +125,7 @@ bool H264MftEncoder::initialize(const RecordingConfig& config, ID3D11Device* dev
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
 
-    firstTimestamp_ = -1;
+    nextOutputTimestampMs_ = -1;
     initialized_ = true;
     return true;
 }
@@ -395,8 +395,16 @@ bool H264MftEncoder::processOutput(std::vector<EncodedVideoPacket>& packets)
 
             EncodedVideoPacket packet;
             packet.data.assign(data, data + length);
-            packet.timestampMs = sampleTime / 10000;
             packet.durationMs = sampleDuration / 10000;
+            if (packet.durationMs <= 0) {
+                packet.durationMs = std::max<int64_t>(1, 1000LL / std::max(config_.video.fps, 1));
+            }
+            const int64_t sampleTimeMs = std::max<int64_t>(0, sampleTime / 10000);
+            if (nextOutputTimestampMs_ < 0) {
+                nextOutputTimestampMs_ = sampleTimeMs;
+            }
+            packet.timestampMs = nextOutputTimestampMs_;
+            nextOutputTimestampMs_ += packet.durationMs;
             packet.keyframe = cleanPoint != 0;
             packets.push_back(std::move(packet));
         }
@@ -484,6 +492,7 @@ void H264MftEncoder::shutdown()
     d3dDevice_.Reset();
     stagingWidth_ = 0;
     stagingHeight_ = 0;
+    nextOutputTimestampMs_ = -1;
     initialized_ = false;
     if (mfStarted_) {
         MFShutdown();

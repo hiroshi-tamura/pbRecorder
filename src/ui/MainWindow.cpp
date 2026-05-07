@@ -1118,13 +1118,16 @@ void MainWindow::onRecord()
             return;
         }
 
-        // Release metering sessions to avoid WASAPI device conflicts
-        releaseMeteringSessions();
-
         pb::RecordingConfig config = buildRecordingConfig();
+        recordingUsesOutputAudio_ = config.recordAudio && config.useOutputAudio;
+        recordingUsesInputAudio_ = config.recordAudio && config.useInputAudio;
+        recordingAudioLevel_.store(0.0f);
 
         // Create and initialize recording session
         session_ = std::make_unique<pb::RecordingSession>();
+        session_->setAudioLevelCallback([this](float peak) {
+            recordingAudioLevel_.store(peak);
+        });
         errorShown_ = false;
         session_->setErrorCallback([this, ja](const std::string& error) {
             QMetaObject::invokeMethod(this, [this, ja, error]() {
@@ -1169,6 +1172,9 @@ void MainWindow::onRecord()
             session_->stop();
             session_.reset();
         }
+        recordingUsesOutputAudio_ = false;
+        recordingUsesInputAudio_ = false;
+        recordingAudioLevel_.store(0.0f);
 
         setRecordingState(false);
 
@@ -2108,7 +2114,9 @@ void MainWindow::updatePeakMeters()
     int outIdx = ui->outputAudioCombo->currentIndex();
     if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
         const auto& dev = outputAudioDevices_[outIdx - 1];
-        if (dev.type == pb::AudioDeviceType::WASAPI_Render) {
+        if (isRecording_ && recordingUsesOutputAudio_) {
+            outputMeter_->setLevel(recordingAudioLevel_.load());
+        } else if (dev.type == pb::AudioDeviceType::WASAPI_Render) {
             if (outputMeteringSession_) {
                 outputMeter_->setLevel(outputMeteringSession_->getPeak());
             } else {
@@ -2128,7 +2136,9 @@ void MainWindow::updatePeakMeters()
     int inIdx = ui->inputAudioCombo->currentIndex();
     if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
         const auto& dev = inputAudioDevices_[inIdx - 1];
-        if (dev.type == pb::AudioDeviceType::WASAPI_Capture) {
+        if (isRecording_ && recordingUsesInputAudio_) {
+            inputMeter_->setLevel(recordingAudioLevel_.load());
+        } else if (dev.type == pb::AudioDeviceType::WASAPI_Capture) {
             if (inputMeteringSession_) {
                 inputMeter_->setLevel(inputMeteringSession_->getPeak());
             } else {

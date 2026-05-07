@@ -7,6 +7,7 @@
 #include <QKeySequence>
 #include <memory>
 #include <vector>
+#include <atomic>
 
 #include "core/Types.h"
 
@@ -138,6 +139,9 @@ private:
     bool isRecording_ = false;
     bool isPaused_ = false;
     bool errorShown_ = false;
+    bool recordingUsesOutputAudio_ = false;
+    bool recordingUsesInputAudio_ = false;
+    std::atomic<float> recordingAudioLevel_{0.0f};
     QTimer updateTimer_;
     QElapsedTimer recordingElapsed_;
     int64_t pausedAccumMs_ = 0;

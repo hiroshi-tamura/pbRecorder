@@ -495,9 +495,21 @@ bool MkvPipeline::encodeAudioOpus(const AudioBuffer& buffer,
     const int64_t frameDurationMs = 20;
 
     while (pos + frameSamplesTotal <= totalFloats) {
+        float* frameData = inputFloat.data() + pos;
+        bool isSilentFrame = true;
+        for (int i = 0; i < frameSamplesTotal; ++i) {
+            if (std::abs(frameData[i]) > 1.0e-8f) {
+                isSilentFrame = false;
+                break;
+            }
+        }
+        if (isSilentFrame && frameSamplesTotal > 0) {
+            frameData[0] = 1.0e-7f;
+        }
+
         int encoded = opus_encode_float(
             opusEncoder_,
-            inputFloat.data() + pos,
+            frameData,
             opusFrameSamples_,
             encodedBuf.data(),
             static_cast<opus_int32>(encodedBuf.size()));

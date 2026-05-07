@@ -230,8 +230,6 @@ bool RecordingSession::start() {
     mediaOriginTimestamp_ = -1;
     firstVideoTimestamp_ = -1;
     firstAudioTimestamp_ = -1;
-    pendingVideoFrames_.clear();
-    pendingAudioBuffers_.clear();
     audioPrimed_ = false;
     expectedAudioTimestamp_ = -1;
     resampleInputFramesTotal_ = 0;
@@ -383,57 +381,12 @@ int64_t RecordingSession::normalizeMediaTimestamp(int64_t timestamp100ns) const 
     return normalized;
 }
 
-bool RecordingSession::mediaOriginReadyLocked() const {
-    if (mediaOriginTimestamp_ >= 0) {
-        return true;
-    }
-    if (!config_.recordAudio) {
-        return firstVideoTimestamp_ >= 0;
-    }
-    return firstVideoTimestamp_ >= 0 && firstAudioTimestamp_ >= 0;
-}
-
-bool RecordingSession::shouldForceMediaOriginLocked() const {
-    if (mediaOriginTimestamp_ >= 0 || firstVideoTimestamp_ < 0 || !config_.recordAudio) {
-        return false;
-    }
-
-    const int fps = std::clamp(config_.video.fps, 1, 240);
-    if (pendingVideoFrames_.size() >= static_cast<size_t>(fps)) {
-        return true;
-    }
-
-    if (!pendingVideoFrames_.empty()) {
-        const int64_t span = pendingVideoFrames_.back().timestamp - firstVideoTimestamp_;
-        return span >= 10000000LL;
-    }
-
-    return false;
-}
-
-void RecordingSession::establishMediaOriginLocked() {
+void RecordingSession::ensureMediaOriginLocked(int64_t timestamp100ns) {
     if (mediaOriginTimestamp_ >= 0) {
         return;
     }
 
-    if (!mediaOriginReadyLocked() && !shouldForceMediaOriginLocked()) {
-        return;
-    }
-
-    mediaOriginTimestamp_ = firstVideoTimestamp_;
-    if (config_.recordAudio && firstAudioTimestamp_ >= 0) {
-        mediaOriginTimestamp_ = std::min(mediaOriginTimestamp_, firstAudioTimestamp_);
-    }
-
-    for (auto& frame : pendingVideoFrames_) {
-        enqueueVideoFrameLocked(std::move(frame));
-    }
-    pendingVideoFrames_.clear();
-
-    for (auto& buffer : pendingAudioBuffers_) {
-        enqueueAudioBufferLocked(std::move(buffer));
-    }
-    pendingAudioBuffers_.clear();
+    mediaOriginTimestamp_ = timestamp100ns;
 }
 
 void RecordingSession::enqueueVideoFrameLocked(VideoFrame frame) {
@@ -462,11 +415,7 @@ void RecordingSession::onVideoFrame(const VideoFrame& frame) {
         if (firstVideoTimestamp_ < 0) {
             firstVideoTimestamp_ = adjusted.timestamp;
         }
-        if (mediaOriginTimestamp_ < 0) {
-            pendingVideoFrames_.push_back(std::move(adjusted));
-            establishMediaOriginLocked();
-            return;
-        }
+        ensureMediaOriginLocked(adjusted.timestamp);
         enqueueVideoFrameLocked(std::move(adjusted));
     }
 }
@@ -475,16 +424,31 @@ void RecordingSession::onAudioBuffer(const AudioBuffer& buffer) {
     if (!recording_.load() || paused_.load()) return;
 
     AudioBuffer adjusted = buffer;
+    if (audioLevelCallback_) {
+        float peak = 0.0f;
+        if (adjusted.bitsPerSample == 16) {
+            const auto* samples = reinterpret_cast<const int16_t*>(adjusted.data.data());
+            const size_t count = adjusted.data.size() / sizeof(int16_t);
+            int maxAbs = 0;
+            for (size_t i = 0; i < count; ++i) {
+                maxAbs = std::max(maxAbs, std::abs(static_cast<int>(samples[i])));
+            }
+            peak = std::min(1.0f, static_cast<float>(maxAbs) / 32768.0f);
+        } else if (adjusted.bitsPerSample == 32) {
+            const auto* samples = reinterpret_cast<const float*>(adjusted.data.data());
+            const size_t count = adjusted.data.size() / sizeof(float);
+            for (size_t i = 0; i < count; ++i) {
+                peak = std::max(peak, std::min(1.0f, std::abs(samples[i])));
+            }
+        }
+        audioLevelCallback_(peak);
+    }
     {
         std::lock_guard<std::mutex> lock(pauseMutex_);
         if (firstAudioTimestamp_ < 0) {
             firstAudioTimestamp_ = adjusted.timestamp;
         }
-        if (mediaOriginTimestamp_ < 0) {
-            pendingAudioBuffers_.push_back(std::move(adjusted));
-            establishMediaOriginLocked();
-            return;
-        }
+        ensureMediaOriginLocked(adjusted.timestamp);
         enqueueAudioBufferLocked(std::move(adjusted));
     }
 }
@@ -577,10 +541,6 @@ bool RecordingSession::writeLeadingSilenceIfNeeded(const AudioBuffer& firstBuffe
         return true;
     }
     audioPrimed_ = true;
-
-    if (config_.container != ContainerFormat::MKV) {
-        return true;
-    }
 
     if (firstBuffer.timestamp <= 0 || firstBuffer.sampleRate == 0 ||
         firstBuffer.channelCount == 0 || firstBuffer.bitsPerSample == 0) {

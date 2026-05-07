@@ -49,7 +49,7 @@ private:
     std::string lastError_;
     uint32_t stagingWidth_ = 0;
     uint32_t stagingHeight_ = 0;
-    int64_t firstTimestamp_ = -1;
+    int64_t nextOutputTimestampMs_ = -1;
     bool mfStarted_ = false;
     bool comInitialized_ = false;
     bool initialized_ = false;
