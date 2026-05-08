@@ -8,6 +8,7 @@
 #include <memory>
 #include <vector>
 #include <atomic>
+#include <optional>
 
 #include "core/Types.h"
 
@@ -19,6 +20,7 @@ namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
 class RegionSelectorWidget;
+class UiElementSelectorWidget;
 
 namespace pb {
 class IRecordingPipeline;
@@ -27,6 +29,7 @@ class IAudioSource;
 class MonitorEnumerator;
 class WindowEnumerator;
 class RecordingSession;
+class UiAutomationHelper;
 }
 
 class MainWindow : public QMainWindow
@@ -48,6 +51,7 @@ private slots:
     void onContainerChanged(int index);
     void onRefreshWindows();
     void onSelectRegion();
+    void onSelectUiElement();
     void onBrowse();
     void onOpenOutputFolder();
     void onRecord();
@@ -75,6 +79,7 @@ private:
     void validateAudioCodec();
     void enforceSingleAudioSource(QObject *changedCombo);
     QString formatRegionInfo(int x, int y, int w, int h) const;
+    QString formatUiElementInfo(const pb::UiElementTarget& target) const;
     void updateCaptureWidgetVisibility(int mode);
     void updateRecordButtonGuard();
     void registerGlobalHotkey();
@@ -84,6 +89,8 @@ private:
     QString generateAutoFileName() const;
     QString getOutputFilePath() const;
     void updateAudioCodecWidgets();
+    void updateCapturePreview();
+    std::optional<pb::RegionRect> currentCapturePreviewRect();
 
     QString settingsFilePath() const;
     QJsonObject loadJson() const;
@@ -122,6 +129,7 @@ private:
 
     // Recording session
     std::unique_ptr<pb::RecordingSession> session_;
+    std::unique_ptr<pb::UiAutomationHelper> previewUiAutomation_;
 
     // Data caches
     std::vector<pb::MonitorInfo> monitors_;
@@ -133,6 +141,8 @@ private:
     // Region selection
     pb::RegionRect selectedRegion_{};
     bool regionSelected_ = false;
+    pb::UiElementTarget selectedUiElement_{};
+    bool uiElementSelected_ = false;
     bool audioCodecCompatible_ = true;
 
     // Recording state
@@ -143,6 +153,7 @@ private:
     bool recordingUsesInputAudio_ = false;
     std::atomic<float> recordingAudioLevel_{0.0f};
     QTimer updateTimer_;
+    QTimer capturePreviewTimer_;
     QElapsedTimer recordingElapsed_;
     int64_t pausedAccumMs_ = 0;
     int64_t pauseStartMs_ = 0;

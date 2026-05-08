@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.5.3 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.5.4 LANGUAGES C CXX)
 
 include(CTest)
 option(PBRECORDER_BUILD_TESTING "Build pbRecorder tests" ON)
@@ -34,6 +34,7 @@ set(WIN_LIBS
     ole32
     oleaut32
     uuid
+    uiautomationcore
     wmcodecdspuuid
     strmiids
     dwmapi
@@ -152,12 +153,14 @@ set(CORE_SOURCES
     src/core/RecordingSession.cpp
     src/core/MonitorEnumerator.cpp
     src/core/WindowEnumerator.cpp
+    src/core/UiAutomationHelper.cpp
 )
 
 set(CAPTURE_SOURCES
     src/capture/DxgiScreenCapture.cpp
     src/capture/WindowCapture.cpp
     src/capture/RegionCapture.cpp
+    src/capture/UiElementCapture.cpp
 )
 
 set(AUDIO_SOURCES
@@ -176,6 +179,7 @@ set(UI_SOURCES
     src/ui/MainWindow.cpp
     src/ui/SettingsDialog.cpp
     src/ui/RegionSelectorWidget.cpp
+    src/ui/UiElementSelectorWidget.cpp
 )
 
 set(CLI_SOURCES

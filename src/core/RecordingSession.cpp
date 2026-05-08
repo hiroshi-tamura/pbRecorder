@@ -3,6 +3,7 @@
 #include "capture/DxgiScreenCapture.h"
 #include "capture/WindowCapture.h"
 #include "capture/RegionCapture.h"
+#include "capture/UiElementCapture.h"
 #include "audio/WasapiCapture.h"
 #include "audio/AsioCapture.h"
 #include "pipeline/SinkWriterPipeline.h"
@@ -577,6 +578,8 @@ std::unique_ptr<ICaptureSource> RecordingSession::createCaptureSource(CaptureMod
             return std::make_unique<WindowCapture>();
         case CaptureMode::Region:
             return std::make_unique<RegionCapture>();
+        case CaptureMode::UiElement:
+            return std::make_unique<UiElementCapture>();
         default:
             return nullptr;
     }

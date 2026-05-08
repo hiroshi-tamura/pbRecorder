@@ -110,6 +110,7 @@ bool SinkWriterPipeline::initialize(const RecordingConfig& config, ID3D11Device*
         firstVideoTimestamp_.store(-1);
         lastVideoTimestamp_.store(0);
         firstAudioTimestamp_.store(-1);
+        surfaceWriteDisabled_ = false;
 
         initialized_ = true;
         return true;
@@ -219,6 +220,9 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
 bool SinkWriterPipeline::writeVideoFrameSurface(const VideoFrame& frame,
                                                 int64_t relativeTs,
                                                 int64_t frameDuration) {
+    if (surfaceWriteDisabled_) {
+        return false;
+    }
     if (!frame.texture) return false;
 
     const uint32_t encWidth = static_cast<uint32_t>(config_.video.width);
@@ -258,29 +262,43 @@ bool SinkWriterPipeline::writeVideoFrameSurface(const VideoFrame& frame,
                                            FALSE,
                                            &mediaBuffer);
     if (FAILED(hr)) {
+        surfaceWriteDisabled_ = true;
         return false;
     }
 
-    hr = mediaBuffer->SetCurrentLength(encWidth * encHeight * 4);
-    if (FAILED(hr)) {
-        return false;
-    }
+    // DXGI surface buffers do not require SetCurrentLength; some H.264
+    // SinkWriter implementations reject samples after it is called.
 
     ComPtr<IMFSample> sample;
     hr = MFCreateSample(&sample);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        surfaceWriteDisabled_ = true;
+        return false;
+    }
     hr = sample->AddBuffer(mediaBuffer.Get());
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        surfaceWriteDisabled_ = true;
+        return false;
+    }
     hr = sample->SetSampleTime(relativeTs);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        surfaceWriteDisabled_ = true;
+        return false;
+    }
     hr = sample->SetSampleDuration(frameDuration);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        surfaceWriteDisabled_ = true;
+        return false;
+    }
 
     {
         std::lock_guard<std::mutex> lock(writeMutex_);
         if (!recording_) return false;
         hr = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            surfaceWriteDisabled_ = true;
+            return false;
+        }
     }
 
     return true;

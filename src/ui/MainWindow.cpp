@@ -2,10 +2,12 @@
 #include "ui_MainWindow.h"
 
 #include "RegionSelectorWidget.h"
+#include "UiElementSelectorWidget.h"
 
 #include "core/MonitorEnumerator.h"
 #include "core/WindowEnumerator.h"
 #include "core/RecordingSession.h"
+#include "core/UiAutomationHelper.h"
 #include "audio/WasapiCapture.h"
 #include "audio/AsioCapture.h"
 #include "pipeline/IRecordingPipeline.h"
@@ -30,10 +32,139 @@
 #include <QUrl>
 #include <QStatusBar>
 #include <QRegularExpression>
+#include <QImage>
+#include <QPixmap>
 #include <windows.h>
+#include <dwmapi.h>
 
 #include "SettingsDialog.h"
 #include "PeakMeterWidget.h"
+
+namespace {
+
+QImage grabPhysicalScreenRect(const pb::RegionRect& rect)
+{
+    if (rect.width <= 0 || rect.height <= 0) {
+        return {};
+    }
+
+    HDC screenDc = GetDC(nullptr);
+    if (!screenDc) {
+        return {};
+    }
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = rect.width;
+    bmi.bmiHeader.biHeight = -rect.height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
+
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HGDIOBJ oldObj = SelectObject(memDc, bitmap);
+    BitBlt(memDc, 0, 0, rect.width, rect.height, screenDc, rect.x, rect.y, SRCCOPY | CAPTUREBLT);
+
+    QImage image(static_cast<const uchar*>(bits), rect.width, rect.height,
+                 rect.width * 4, QImage::Format_ARGB32);
+    QImage copy = image.copy();
+
+    SelectObject(memDc, oldObj);
+    DeleteDC(memDc);
+    DeleteObject(bitmap);
+    ReleaseDC(nullptr, screenDc);
+    return copy;
+}
+
+bool getExtendedWindowRect(HWND hwnd, pb::RegionRect& rect)
+{
+    if (!hwnd || !IsWindow(hwnd)) {
+        return false;
+    }
+
+    RECT wr{};
+    HRESULT hr = DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &wr, sizeof(wr));
+    if (FAILED(hr) && !GetWindowRect(hwnd, &wr)) {
+        return false;
+    }
+
+    rect = {wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top};
+    return rect.width > 0 && rect.height > 0;
+}
+
+QImage grabWindowRelativeRect(HWND hwnd, const pb::RegionRect& windowRect, const pb::RegionRect& targetRect)
+{
+    if (!hwnd || !IsWindow(hwnd) || targetRect.width <= 0 || targetRect.height <= 0) {
+        return {};
+    }
+
+    HDC screenDc = GetDC(nullptr);
+    if (!screenDc) {
+        return {};
+    }
+
+    HDC fullDc = CreateCompatibleDC(screenDc);
+    HDC cropDc = CreateCompatibleDC(screenDc);
+    if (!fullDc || !cropDc) {
+        if (fullDc) DeleteDC(fullDc);
+        if (cropDc) DeleteDC(cropDc);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
+
+    HBITMAP fullBitmap = CreateCompatibleBitmap(screenDc, windowRect.width, windowRect.height);
+    HGDIOBJ oldFull = SelectObject(fullDc, fullBitmap);
+    static constexpr UINT PW_RENDERFULLCONTENT_FLAG = 0x00000002;
+    if (!PrintWindow(hwnd, fullDc, PW_RENDERFULLCONTENT_FLAG)) {
+        BitBlt(fullDc, 0, 0, windowRect.width, windowRect.height, screenDc, windowRect.x, windowRect.y, SRCCOPY | CAPTUREBLT);
+    }
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = targetRect.width;
+    bmi.bmiHeader.biHeight = -targetRect.height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP cropBitmap = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ oldCrop = SelectObject(cropDc, cropBitmap);
+
+    const int srcX = targetRect.x - windowRect.x;
+    const int srcY = targetRect.y - windowRect.y;
+    BitBlt(cropDc, 0, 0, targetRect.width, targetRect.height, fullDc, srcX, srcY, SRCCOPY);
+
+    QImage image(static_cast<const uchar*>(bits), targetRect.width, targetRect.height,
+                 targetRect.width * 4, QImage::Format_ARGB32);
+    QImage copy = image.copy();
+
+    SelectObject(cropDc, oldCrop);
+    SelectObject(fullDc, oldFull);
+    DeleteObject(cropBitmap);
+    DeleteObject(fullBitmap);
+    DeleteDC(cropDc);
+    DeleteDC(fullDc);
+    ReleaseDC(nullptr, screenDc);
+    return copy;
+}
+
+QString appTitle()
+{
+    const QString version = QCoreApplication::applicationVersion();
+    return version.isEmpty() ? QStringLiteral("pbRecorder")
+                             : QStringLiteral("pbRecorder %1").arg(version);
+}
+
+} // namespace
 
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -206,6 +337,7 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(std::make_unique<Ui::MainWindow>())
     , monitorEnum_(std::make_unique<pb::MonitorEnumerator>())
     , windowEnum_(std::make_unique<pb::WindowEnumerator>())
+    , previewUiAutomation_(std::make_unique<pb::UiAutomationHelper>())
 {
     ui->setupUi(this);
 
@@ -242,6 +374,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Setup peak meters under audio device combos
     setupPeakMeters();
+
+    capturePreviewTimer_.setInterval(250);
+    connect(&capturePreviewTimer_, &QTimer::timeout,
+            this, &MainWindow::updateCapturePreview);
+    capturePreviewTimer_.start();
 
     // Load presets and restore last session
     loadPresets();
@@ -453,6 +590,8 @@ void MainWindow::setupConnections()
             this, &MainWindow::onRefreshWindows);
     connect(ui->selectRegionBtn, &QPushButton::clicked,
             this, &MainWindow::onSelectRegion);
+    connect(ui->selectUiElementBtn, &QPushButton::clicked,
+            this, &MainWindow::onSelectUiElement);
     connect(ui->browseBtn, &QPushButton::clicked,
             this, &MainWindow::onBrowse);
     connect(ui->openOutputFolderBtn, &QPushButton::clicked,
@@ -504,10 +643,11 @@ void MainWindow::onCaptureModeChanged(int index)
 
 void MainWindow::updateCaptureWidgetVisibility(int mode)
 {
-    // 0=Screen, 1=Window, 2=Region
+    // 0=Screen, 1=Window, 2=Region, 3=UI element tracking
     bool showMonitor = (mode == 0);
     bool showWindow  = (mode == 1);
     bool showRegion  = (mode == 2);
+    bool showUiElement = (mode == 3);
 
     ui->monitorLabel->setVisible(showMonitor);
     ui->monitorCombo->setVisible(showMonitor);
@@ -520,6 +660,11 @@ void MainWindow::updateCaptureWidgetVisibility(int mode)
     ui->regionInfoLabel->setVisible(showRegion);
     ui->selectRegionBtn->setVisible(showRegion);
     ui->autoAdjustCheck->setVisible(showRegion);
+
+    ui->uiElementLabel->setVisible(showUiElement);
+    ui->uiElementInfoLabel->setVisible(showUiElement);
+    ui->selectUiElementBtn->setVisible(showUiElement);
+    ui->uiElementWindowCaptureCheck->setVisible(showUiElement);
 
     updateRecordButtonGuard();
 }
@@ -536,11 +681,96 @@ void MainWindow::updateRecordButtonGuard()
         ui->recordBtn->setEnabled(false);
         statusBar()->showMessage(
             ja ? "範囲を選択してください" : "Please select a region first");
+    } else if (mode == 3 && !uiElementSelected_) {
+        ui->recordBtn->setEnabled(false);
+        statusBar()->showMessage(
+            ja ? "UI領域を選択してください" : "Please select a UI region first");
     } else if (!audioCodecCompatible_) {
         ui->recordBtn->setEnabled(false);
     } else {
         ui->recordBtn->setEnabled(true);
     }
+}
+
+std::optional<pb::RegionRect> MainWindow::currentCapturePreviewRect()
+{
+    const int mode = ui->captureModeCombo->currentIndex();
+
+    if (mode == 0 && ui->monitorCombo->currentIndex() >= 0
+        && ui->monitorCombo->currentIndex() < static_cast<int>(monitors_.size())) {
+        const auto& m = monitors_[ui->monitorCombo->currentIndex()];
+        return pb::RegionRect{m.x, m.y, m.width, m.height};
+    }
+
+    if (mode == 1 && ui->windowCombo->currentIndex() >= 0
+        && ui->windowCombo->currentIndex() < static_cast<int>(windows_.size())) {
+        HWND hwnd = windows_[ui->windowCombo->currentIndex()].hwnd;
+        RECT rect{};
+        if (hwnd && IsWindow(hwnd) && GetWindowRect(hwnd, &rect)) {
+            return pb::RegionRect{
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top
+            };
+        }
+    }
+
+    if (mode == 2 && regionSelected_) {
+        return selectedRegion_;
+    }
+
+    if (mode == 3 && uiElementSelected_ && previewUiAutomation_) {
+        auto rect = previewUiAutomation_->resolveRect(selectedUiElement_);
+        if (rect) {
+            return rect;
+        }
+        return selectedUiElement_.initialRect;
+    }
+
+    return std::nullopt;
+}
+
+void MainWindow::updateCapturePreview()
+{
+    if (!ui || !ui->capturePreviewLabel) {
+        return;
+    }
+
+    const bool ja = (currentLang_ == "ja");
+    auto rect = currentCapturePreviewRect();
+    if (!rect || rect->width <= 0 || rect->height <= 0) {
+        ui->capturePreviewLabel->setPixmap(QPixmap());
+        ui->capturePreviewLabel->setText(ja ? "録画対象プレビュー" : "Capture target preview");
+        return;
+    }
+
+    QImage image;
+    if (ui->captureModeCombo->currentIndex() == 3 &&
+        uiElementSelected_ &&
+        ui->uiElementWindowCaptureCheck->isChecked()) {
+        pb::RegionRect rootRect{};
+        if (getExtendedWindowRect(selectedUiElement_.rootWindow, rootRect)) {
+            image = grabWindowRelativeRect(selectedUiElement_.rootWindow, rootRect, *rect);
+        }
+    }
+    if (image.isNull()) {
+        image = grabPhysicalScreenRect(*rect);
+    }
+    if (image.isNull()) {
+        ui->capturePreviewLabel->setPixmap(QPixmap());
+        ui->capturePreviewLabel->setText(ja ? "プレビュー取得不可" : "Preview unavailable");
+        return;
+    }
+
+    QPixmap pixmap = QPixmap::fromImage(image);
+    QSize targetSize = ui->capturePreviewLabel->contentsRect().size();
+    if (targetSize.width() <= 0 || targetSize.height() <= 0) {
+        targetSize = QSize(320, 120);
+    }
+    ui->capturePreviewLabel->setText(QString());
+    ui->capturePreviewLabel->setPixmap(
+        pixmap.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
 void MainWindow::registerGlobalHotkey()
@@ -1048,6 +1278,33 @@ void MainWindow::onSelectRegion()
     selector->show();
 }
 
+void MainWindow::onSelectUiElement()
+{
+    auto *selector = new UiElementSelectorWidget();
+    selector->setLanguage(currentLang_);
+
+    connect(selector, &UiElementSelectorWidget::uiElementSelected,
+            this, [this](const pb::UiElementTarget& target) {
+        selectedUiElement_ = target;
+        uiElementSelected_ = true;
+        ui->uiElementInfoLabel->setText(formatUiElementInfo(target));
+        ui->uiElementInfoLabel->setStyleSheet("");
+        const bool ja = (currentLang_ == "ja");
+        statusBar()->showMessage(
+            ja ? "UI領域を選択しました" : "UI region selected", 3000);
+        updateRecordButtonGuard();
+    });
+
+    connect(selector, &UiElementSelectorWidget::selectionCancelled,
+            this, [this]() {
+        const bool ja = (currentLang_ == "ja");
+        statusBar()->showMessage(
+            ja ? "UI領域選択がキャンセルされました" : "UI region selection cancelled", 3000);
+    });
+
+    selector->show();
+}
+
 void MainWindow::onBrowse()
 {
     QString currentDir = ui->outputDirEdit->text();
@@ -1115,6 +1372,12 @@ void MainWindow::onRecord()
             QMessageBox::warning(this, errTitle,
                 ja ? "先にキャプチャ範囲を選択してください。"
                    : "Please select a capture region first.");
+            return;
+        }
+        if (ui->captureModeCombo->currentIndex() == 3 && !uiElementSelected_) {
+            QMessageBox::warning(this, errTitle,
+                ja ? "先にUI領域を選択してください。"
+                   : "Please select a UI region first.");
             return;
         }
 
@@ -1239,8 +1502,8 @@ void MainWindow::setRecordingState(bool recording)
         updateTimer_.start(100);
 
         // Title bar reflects recording state
-        setWindowTitle(ja ? QString::fromUtf8("● 録画中 - pbRecorder")
-                          : QString::fromUtf8("● Recording - pbRecorder"));
+        setWindowTitle(ja ? QString::fromUtf8("● 録画中 - %1").arg(appTitle())
+                          : QString::fromUtf8("● Recording - %1").arg(appTitle()));
 
         // Disable settings during recording
         ui->sourceGroupBox->setEnabled(false);
@@ -1262,7 +1525,7 @@ void MainWindow::setRecordingState(bool recording)
         ui->fileSizeLabel->setText("0 MB");
 
         // Restore window title
-        setWindowTitle("pbRecorder");
+        setWindowTitle(appTitle());
 
         ui->sourceGroupBox->setEnabled(true);
         ui->videoGroupBox->setEnabled(true);
@@ -1307,12 +1570,12 @@ void MainWindow::onUpdateTimer()
     bool ja = (currentLang_ == "ja");
     if (isPaused_) {
         setWindowTitle(ja
-            ? QString::fromUtf8("‖ 一時停止中 %1 - pbRecorder").arg(durStr)
-            : QString::fromUtf8("‖ Paused %1 - pbRecorder").arg(durStr));
+            ? QString::fromUtf8("‖ 一時停止中 %1 - %2").arg(durStr, appTitle())
+            : QString::fromUtf8("‖ Paused %1 - %2").arg(durStr, appTitle()));
     } else {
         setWindowTitle(ja
-            ? QString::fromUtf8("● 録画中 %1 - pbRecorder").arg(durStr)
-            : QString::fromUtf8("● Recording %1 - pbRecorder").arg(durStr));
+            ? QString::fromUtf8("● 録画中 %1 - %2").arg(durStr, appTitle())
+            : QString::fromUtf8("● Recording %1 - %2").arg(durStr, appTitle()));
     }
 
     // Update file size: use actual file size if available, otherwise estimate
@@ -1359,6 +1622,10 @@ pb::RecordingConfig MainWindow::buildRecordingConfig() const
 
     if (modeIdx == 2 && regionSelected_) {
         config.capture.region = selectedRegion_;
+    }
+    if (modeIdx == 3 && uiElementSelected_) {
+        config.capture.uiElement = selectedUiElement_;
+        config.capture.uiElementCaptureFromWindow = ui->uiElementWindowCaptureCheck->isChecked();
     }
     config.capture.captureCursor = ui->captureCursorCheck->isChecked();
     config.capture.targetFps = ui->fpsSpinBox->value();
@@ -1478,6 +1745,28 @@ QString MainWindow::formatRegionInfo(int x, int y, int w, int h) const
     return QString("%1x%2 @ (%3,%4)").arg(w).arg(h).arg(x).arg(y);
 }
 
+QString MainWindow::formatUiElementInfo(const pb::UiElementTarget& target) const
+{
+    QString name = QString::fromStdWString(target.name);
+    if (name.trimmed().isEmpty()) {
+        name = QString::fromStdWString(target.automationId);
+    }
+    if (name.trimmed().isEmpty()) {
+        name = QString::fromStdWString(target.className);
+    }
+    if (name.trimmed().isEmpty()) {
+        name = currentLang_ == "ja" ? QStringLiteral("UI領域") : QStringLiteral("UI region");
+    }
+
+    const auto& r = target.initialRect;
+    return QString("%1  %2x%3 @ (%4,%5)")
+        .arg(name)
+        .arg(r.width)
+        .arg(r.height)
+        .arg(r.x)
+        .arg(r.y);
+}
+
 // ============================================================================
 // JSON Settings I/O
 // ============================================================================
@@ -1570,7 +1859,9 @@ void MainWindow::saveCurrentAsPreset(const QString& name)
     QJsonObject presets = root["presets"].toObject();
 
     QJsonObject p;
-    p["captureMode"] = ui->captureModeCombo->currentIndex();
+    const int captureMode = ui->captureModeCombo->currentIndex();
+    p["captureMode"] = captureMode;
+    p["cliCompatible"] = captureMode != static_cast<int>(pb::CaptureMode::UiElement);
     p["videoCodec"] = ui->videoCodecCombo->currentIndex();
     p["container"] = ui->containerCombo->currentIndex();
     p["fps"] = ui->fpsSpinBox->value();
@@ -1585,6 +1876,7 @@ void MainWindow::saveCurrentAsPreset(const QString& name)
     p["h264Profile"] = ui->h264ProfileCombo->currentIndex();
     p["h264Level"] = ui->h264LevelCombo->currentIndex();
     p["captureCursor"] = ui->captureCursorCheck->isChecked();
+    p["uiElementCaptureFromWindow"] = ui->uiElementWindowCaptureCheck->isChecked();
 
     presets[name] = p;
     root["presets"] = presets;
@@ -1678,6 +1970,8 @@ void MainWindow::applyPreset(const QString& name)
         ui->h264LevelCombo->setCurrentIndex(p["h264Level"].toInt());
     if (p.contains("captureCursor"))
         ui->captureCursorCheck->setChecked(p["captureCursor"].toBool());
+    if (p.contains("uiElementCaptureFromWindow"))
+        ui->uiElementWindowCaptureCheck->setChecked(p["uiElementCaptureFromWindow"].toBool(true));
 }
 
 // ============================================================================
@@ -1702,6 +1996,28 @@ void MainWindow::saveSettings()
         s["regionW"] = selectedRegion_.width;
         s["regionH"] = selectedRegion_.height;
     }
+    s["uiElementSelected"] = uiElementSelected_;
+    if (uiElementSelected_) {
+        s["uiElementRootHwnd"] = QString::number(
+            reinterpret_cast<quintptr>(selectedUiElement_.rootWindow), 16);
+        s["uiElementRootX"] = selectedUiElement_.rootInitialRect.x;
+        s["uiElementRootY"] = selectedUiElement_.rootInitialRect.y;
+        s["uiElementRootW"] = selectedUiElement_.rootInitialRect.width;
+        s["uiElementRootH"] = selectedUiElement_.rootInitialRect.height;
+        s["uiElementX"] = selectedUiElement_.initialRect.x;
+        s["uiElementY"] = selectedUiElement_.initialRect.y;
+        s["uiElementW"] = selectedUiElement_.initialRect.width;
+        s["uiElementH"] = selectedUiElement_.initialRect.height;
+        s["uiElementName"] = QString::fromStdWString(selectedUiElement_.name);
+        s["uiElementAutomationId"] = QString::fromStdWString(selectedUiElement_.automationId);
+        s["uiElementClassName"] = QString::fromStdWString(selectedUiElement_.className);
+        s["uiElementControlType"] = selectedUiElement_.controlType;
+        QJsonArray path;
+        for (int index : selectedUiElement_.childPath) {
+            path.append(index);
+        }
+        s["uiElementChildPath"] = path;
+    }
     s["videoCodec"] = ui->videoCodecCombo->currentIndex();
     s["container"] = ui->containerCombo->currentIndex();
     s["fps"] = ui->fpsSpinBox->value();
@@ -1716,6 +2032,7 @@ void MainWindow::saveSettings()
     s["h264Profile"] = ui->h264ProfileCombo->currentIndex();
     s["h264Level"] = ui->h264LevelCombo->currentIndex();
     s["captureCursor"] = ui->captureCursorCheck->isChecked();
+    s["uiElementCaptureFromWindow"] = ui->uiElementWindowCaptureCheck->isChecked();
     s["asioOutStartCh"] = ui->asioOutStartChSpin->value();
     s["asioOutEndCh"] = ui->asioOutEndChSpin->value();
     s["asioStartCh"] = ui->asioStartChSpin->value();
@@ -1772,6 +2089,29 @@ void MainWindow::loadSettings()
             selectedRegion_.height));
         ui->regionInfoLabel->setStyleSheet("");
     }
+    if (s["uiElementSelected"].toBool()) {
+        uiElementSelected_ = true;
+        selectedUiElement_.rootWindow = reinterpret_cast<HWND>(
+            static_cast<quintptr>(s["uiElementRootHwnd"].toString().toULongLong(nullptr, 16)));
+        selectedUiElement_.rootInitialRect.x = s["uiElementRootX"].toInt();
+        selectedUiElement_.rootInitialRect.y = s["uiElementRootY"].toInt();
+        selectedUiElement_.rootInitialRect.width = s["uiElementRootW"].toInt();
+        selectedUiElement_.rootInitialRect.height = s["uiElementRootH"].toInt();
+        selectedUiElement_.initialRect.x = s["uiElementX"].toInt();
+        selectedUiElement_.initialRect.y = s["uiElementY"].toInt();
+        selectedUiElement_.initialRect.width = s["uiElementW"].toInt();
+        selectedUiElement_.initialRect.height = s["uiElementH"].toInt();
+        selectedUiElement_.name = s["uiElementName"].toString().toStdWString();
+        selectedUiElement_.automationId = s["uiElementAutomationId"].toString().toStdWString();
+        selectedUiElement_.className = s["uiElementClassName"].toString().toStdWString();
+        selectedUiElement_.controlType = s["uiElementControlType"].toInt();
+        selectedUiElement_.childPath.clear();
+        for (const QJsonValue& value : s["uiElementChildPath"].toArray()) {
+            selectedUiElement_.childPath.push_back(value.toInt());
+        }
+        ui->uiElementInfoLabel->setText(formatUiElementInfo(selectedUiElement_));
+        ui->uiElementInfoLabel->setStyleSheet("");
+    }
 
     if (s.contains("videoCodec"))
         ui->videoCodecCombo->setCurrentIndex(s["videoCodec"].toInt());
@@ -1821,6 +2161,8 @@ void MainWindow::loadSettings()
         ui->h264LevelCombo->setCurrentIndex(s["h264Level"].toInt());
     if (s.contains("captureCursor"))
         ui->captureCursorCheck->setChecked(s["captureCursor"].toBool());
+    if (s.contains("uiElementCaptureFromWindow"))
+        ui->uiElementWindowCaptureCheck->setChecked(s["uiElementCaptureFromWindow"].toBool(true));
 
     if (s.contains("outputDir")) {
         QString dir = s["outputDir"].toString();
@@ -1927,6 +2269,7 @@ void MainWindow::retranslateUi()
     ui->captureModeCombo->setItemText(0, ja ? "スクリーン" : "Screen");
     ui->captureModeCombo->setItemText(1, ja ? "ウィンドウ" : "Window");
     ui->captureModeCombo->setItemText(2, ja ? "範囲指定" : "Region");
+    ui->captureModeCombo->setItemText(3, ja ? "UI領域追跡" : "UI Region Tracking");
     ui->monitorLabel->setText(ja ? "モニター:" : "Monitor:");
     ui->windowLabel->setText(ja ? "ウィンドウ:" : "Window:");
     ui->refreshWindowsBtn->setText(ja ? "更新" : "Refresh");
@@ -1935,6 +2278,19 @@ void MainWindow::retranslateUi()
         ui->regionInfoLabel->setText(ja ? "未選択" : "Not selected");
     }
     ui->selectRegionBtn->setText(ja ? "範囲選択" : "Select");
+    ui->uiElementLabel->setText(ja ? "UI領域:" : "UI region:");
+    if (!uiElementSelected_) {
+        ui->uiElementInfoLabel->setText(ja ? "未選択" : "Not selected");
+    }
+    ui->selectUiElementBtn->setText(ja ? "UI領域選択" : "Select");
+    ui->uiElementWindowCaptureCheck->setText(ja ? "親ウィンドウから切り出し" : "Crop from parent window");
+    ui->uiElementWindowCaptureCheck->setToolTip(ja
+        ? "別ウィンドウの重なりを避けるため、親ウィンドウを直接キャプチャしてからUI領域を切り出します"
+        : "Capture the parent window first, then crop the UI region to avoid overlapping windows");
+    ui->capturePreviewTitleLabel->setText(ja ? "プレビュー:" : "Preview:");
+    if (!ui->capturePreviewLabel->pixmap()) {
+        ui->capturePreviewLabel->setText(ja ? "録画対象プレビュー" : "Capture target preview");
+    }
     ui->autoAdjustCheck->setText(ja ? "オートアジャスト" : "Auto adjust");
     ui->autoAdjustCheck->setToolTip(ja ? "範囲選択時に近くのラインに自動でスナップします" : "Snap to nearby lines when selecting region");
     ui->captureCursorCheck->setText(ja ? "マウスカーソルをキャプチャ" : "Capture mouse cursor");
@@ -1945,6 +2301,9 @@ void MainWindow::retranslateUi()
     ui->selectRegionBtn->setToolTip(ja
         ? "画面で範囲を選択し、Enterキーで確定"
         : "Draw a capture region, then press Enter to confirm");
+    ui->selectUiElementBtn->setToolTip(ja
+        ? "マウス位置のUI領域を選択し、録画中に追跡します"
+        : "Select a UI region under the mouse and track it while recording");
 
     // Video group
     ui->videoGroupBox->setTitle(ja ? "映像設定" : "Video Settings");
@@ -2028,7 +2387,7 @@ void MainWindow::retranslateUi()
 
     // Window title (only set static title here when not recording)
     if (!isRecording_) {
-        setWindowTitle("pbRecorder");
+        setWindowTitle(appTitle());
     }
 }
 

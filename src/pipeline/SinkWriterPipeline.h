@@ -78,6 +78,7 @@ private:
     uint32_t stagingHeight_ = 0;
     uint32_t gpuInputWidth_ = 0;
     uint32_t gpuInputHeight_ = 0;
+    bool surfaceWriteDisabled_ = false;
     bool ensureStagingTexture(uint32_t width, uint32_t height);
     bool ensureGpuInputTexture(uint32_t width, uint32_t height);
 

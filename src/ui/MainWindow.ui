@@ -139,6 +139,11 @@
            <string>範囲指定</string>
           </property>
          </item>
+         <item>
+          <property name="text">
+           <string>UI領域追跡</string>
+          </property>
+         </item>
         </widget>
        </item>
        <item row="1" column="0">
@@ -228,7 +233,47 @@
          </property>
         </widget>
        </item>
-       <item row="5" column="1" colspan="2">
+       <item row="5" column="0">
+        <widget class="QLabel" name="uiElementLabel">
+         <property name="text">
+          <string>UI領域:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="1">
+        <widget class="QLabel" name="uiElementInfoLabel">
+         <property name="text">
+          <string>未選択</string>
+         </property>
+         <property name="styleSheet">
+          <string>color: gray;</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="2">
+        <widget class="QPushButton" name="selectUiElementBtn">
+         <property name="text">
+         <string>UI領域選択</string>
+         </property>
+         <property name="toolTip">
+          <string>マウス位置のUI領域を選択し、録画中に追跡します</string>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="1" colspan="2">
+        <widget class="QCheckBox" name="uiElementWindowCaptureCheck">
+         <property name="text">
+          <string>親ウィンドウから切り出し</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+         <property name="toolTip">
+          <string>別ウィンドウの重なりを避けるため、親ウィンドウを直接キャプチャしてからUI領域を切り出します</string>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="1" colspan="2">
         <widget class="QCheckBox" name="captureCursorCheck">
          <property name="text">
           <string>マウスカーソルをキャプチャ</string>
@@ -238,6 +283,38 @@
          </property>
          <property name="toolTip">
           <string>Capture mouse cursor</string>
+         </property>
+        </widget>
+       </item>
+       <item row="8" column="0">
+        <widget class="QLabel" name="capturePreviewTitleLabel">
+         <property name="text">
+          <string>プレビュー:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="8" column="1" colspan="2">
+        <widget class="QLabel" name="capturePreviewLabel">
+         <property name="minimumSize">
+          <size>
+           <width>240</width>
+           <height>96</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>16777215</width>
+           <height>140</height>
+          </size>
+         </property>
+         <property name="styleSheet">
+          <string>background-color: #202020; border: 1px solid #555; color: #999;</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignCenter</set>
+         </property>
+         <property name="text">
+          <string>録画対象プレビュー</string>
          </property>
         </widget>
        </item>

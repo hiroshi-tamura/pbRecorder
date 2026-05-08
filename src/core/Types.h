@@ -46,7 +46,8 @@ enum class ContainerFormat {
 enum class CaptureMode {
     Screen,    // Full display
     Window,    // Specific window
-    Region     // User-selected region
+    Region,    // User-selected region
+    UiElement  // UI Automation element tracking
 };
 
 // Audio device type
@@ -92,6 +93,17 @@ struct RegionRect {
     int x, y, width, height;
 };
 
+struct UiElementTarget {
+    HWND rootWindow = nullptr;
+    RegionRect rootInitialRect = {};
+    RegionRect initialRect = {};
+    std::vector<int> childPath;
+    std::wstring name;
+    std::wstring automationId;
+    std::wstring className;
+    int controlType = 0;
+};
+
 struct VideoSettings {
     VideoCodec codec = VideoCodec::H264;
     int width = 0;          // 0 = auto (from capture source)
@@ -117,6 +129,8 @@ struct CaptureConfig {
     int monitorIndex = 0;
     HWND targetWindow = nullptr;
     RegionRect region = {};
+    UiElementTarget uiElement = {};
+    bool uiElementCaptureFromWindow = true;
     bool captureCursor = true;
     int targetFps = 60;
 };

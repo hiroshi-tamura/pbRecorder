@@ -18,6 +18,7 @@
 
 #include <windows.h>
 #include <atomic>
+#include <optional>
 
 // ---------------------------------------------------------------------------
 // Ctrl+C handler
@@ -334,6 +335,7 @@ int CliRunner::run(const QStringList& args) {
     QString audioOutSpec, audioInSpec;
     QString asioChannels;
     int vorbisQuality = 5;
+    std::optional<pb::CaptureMode> explicitCaptureMode;
 
     auto getArg = [&](int i) -> QString {
         return (i + 1 < args.size()) ? args[i + 1] : QString();
@@ -354,17 +356,23 @@ int CliRunner::run(const QStringList& args) {
             if (m == "screen")      config.capture.mode = pb::CaptureMode::Screen;
             else if (m == "window") config.capture.mode = pb::CaptureMode::Window;
             else if (m == "region") config.capture.mode = pb::CaptureMode::Region;
+            else if (m == "ui" || m == "uielement" || m == "ui-element") {
+                err() << "Error: UI region tracking is GUI-only. Use screen, window, or region in CLI mode." << Qt::endl;
+                return 1;
+            }
             else { err() << "Error: unknown mode '" << m << "'" << Qt::endl; return 1; }
+            explicitCaptureMode = config.capture.mode;
             continue;
         }
         if (a == "--monitor")  { config.capture.monitorIndex = getArg(i).toInt(); ++i; continue; }
-        if (a == "--window")   { windowTitle = getArg(i); ++i; config.capture.mode = pb::CaptureMode::Window; continue; }
-        if (a == "--hwnd")     { hwndStr = getArg(i); ++i; config.capture.mode = pb::CaptureMode::Window; continue; }
+        if (a == "--window")   { windowTitle = getArg(i); ++i; config.capture.mode = pb::CaptureMode::Window; explicitCaptureMode = pb::CaptureMode::Window; continue; }
+        if (a == "--hwnd")     { hwndStr = getArg(i); ++i; config.capture.mode = pb::CaptureMode::Window; explicitCaptureMode = pb::CaptureMode::Window; continue; }
         if (a == "--region") {
             QStringList parts = getArg(i).split(','); ++i;
             if (parts.size() != 4) { err() << "Error: --region requires X,Y,W,H" << Qt::endl; return 1; }
             config.capture.region = { parts[0].toInt(), parts[1].toInt(), parts[2].toInt(), parts[3].toInt() };
             config.capture.mode = pb::CaptureMode::Region;
+            explicitCaptureMode = pb::CaptureMode::Region;
             continue;
         }
         if (a == "--cursor")    { config.capture.captureCursor = true; continue; }
@@ -448,8 +456,24 @@ int CliRunner::run(const QStringList& args) {
             config.video.bitrate = p["videoBitrate"].toInt() * 1000;
         if (p.contains("videoQuality"))
             config.video.quality = p["videoQuality"].toInt();
-        if (p.contains("captureMode"))
-            config.capture.mode = static_cast<pb::CaptureMode>(p["captureMode"].toInt());
+        if (p.contains("captureMode")) {
+            int mode = p["captureMode"].toInt();
+            if (mode == static_cast<int>(pb::CaptureMode::UiElement)) {
+                if (!explicitCaptureMode) {
+                    err() << "Error: preset '" << presetName
+                          << "' uses GUI-only UI region tracking. Choose a CLI-compatible mode." << Qt::endl;
+                    return 1;
+                }
+            } else {
+                if (mode < static_cast<int>(pb::CaptureMode::Screen) ||
+                    mode > static_cast<int>(pb::CaptureMode::Region)) {
+                    err() << "Error: preset '" << presetName
+                          << "' contains an unsupported capture mode for CLI." << Qt::endl;
+                    return 1;
+                }
+                config.capture.mode = static_cast<pb::CaptureMode>(mode);
+            }
+        }
         if (p.contains("audioCodec"))
             config.audio.codec = static_cast<pb::AudioCodec>(p["audioCodec"].toInt());
         if (p.contains("audioBitrate"))
@@ -460,6 +484,10 @@ int CliRunner::run(const QStringList& args) {
             config.video.useHardwareEncoder = p["hwEncoder"].toBool();
         if (p.contains("captureCursor"))
             config.capture.captureCursor = p["captureCursor"].toBool();
+    }
+
+    if (explicitCaptureMode) {
+        config.capture.mode = *explicitCaptureMode;
     }
 
     // -----------------------------------------------------------------------

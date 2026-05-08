@@ -16,6 +16,10 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 - **Region** — Record an arbitrary rectangular area
   - **Auto-adjust** — Automatically snaps to nearby window edges
   - Edges can be fine-tuned by dragging after selection
+- **UI Region Tracking** — Select a UI Automation element under the mouse and keep the recording crop aligned to that element while it moves
+  - `Ctrl+Space`, `Enter`, or click confirms the highlighted UI region; `Esc` cancels
+  - **Crop from parent window** is enabled by default to reduce unrelated overlapping windows in the captured image
+  - Falls back to screen cropping when the target application cannot be captured through `PrintWindow`
 
 ### Video
 - **Codecs**: H.264, WMV
@@ -56,19 +60,30 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 ## GUI Usage
 
-1. Select capture source (Full Screen / Window / Region)
+1. Select capture source (Full Screen / Window / Region / UI Region Tracking)
 2. Select audio devices if needed
 3. Configure container format and codecs
 4. Set output folder and filename
 5. Click Record (or `Ctrl+R`) to start/stop
 
+For UI Region Tracking, choose **UI Region Tracking**, click **Select**, hover the target pane/control, then confirm the highlighted region. Use **Crop from parent window** when you want to avoid unrelated overlapping windows in the capture.
+
 ### Keyboard Shortcuts
-- `Ctrl+R` — Start/stop recording
+- `Ctrl+R` — Start/stop recording from the main window
+- `Ctrl+Shift+R` — Global start/stop hotkey
 - Region selection: `Enter` to confirm, `Esc` to cancel
+- UI region selection: `Ctrl+Space`, `Enter`, or click to confirm; `Esc` to cancel; mouse wheel / arrow keys cycle nearby parent UI regions
+
+### UI Region Tracking Notes
+
+UI Region Tracking is available in the GUI only. It uses Windows UI Automation to identify the selected pane/control and records the corresponding rectangle. The default **Crop from parent window** option captures the parent window first and then crops the selected UI region, which can avoid unrelated windows covering the target. Some applications do not render correctly through `PrintWindow`; disable the option to record the on-screen composed pixels instead.
+
+Limitations: UI tracking depends on the target application's UI Automation tree and window rendering behavior. Custom-rendered, elevated, hidden, or minimized applications may not expose stable UI regions. Parent-window crop may produce black or stale frames in applications that do not support `PrintWindow` well.
 
 ## CLI Usage
 
 `pbRecorder-cli.exe` provides full recording functionality from the command line.
+UI Region Tracking is GUI-only because it requires interactive UI element selection.
 
 ### Device Enumeration
 
