@@ -33,9 +33,11 @@ bool UiElementCapture::initialize(const CaptureConfig& config, ID3D11Device* dev
 
     config_ = config;
     target_ = config.uiElement;
-    captureFromWindow_ = config.uiElementCaptureFromWindow &&
-                         target_.rootWindow &&
-                         IsWindow(target_.rootWindow);
+    captureFromWindow_ = config.uiElementCaptureFromWindow;
+    if (captureFromWindow_ && (!target_.rootWindow || !IsWindow(target_.rootWindow))) {
+        reportError("UiElementCapture: parent window capture is enabled, but the selected parent window is no longer available");
+        return false;
+    }
     if (!validRegion(target_.initialRect)) {
         reportError("UiElementCapture::initialize: invalid UI element bounds");
         return false;
@@ -96,7 +98,7 @@ bool UiElementCapture::initialize(const CaptureConfig& config, ID3D11Device* dev
     innerCapture_->setFrameCallback(
         [this](const VideoFrame& frame) { onFullFrame(frame); });
     innerCapture_->setErrorCallback(
-        [this](const std::string& err) { reportError("UiElementCapture(inner): " + err); });
+        [this](const std::string& err) { handleInnerError(err); });
 
     return true;
 }
@@ -107,7 +109,12 @@ bool UiElementCapture::start()
     if (!innerCapture_) return false;
 
     capturing_ = true;
-    return innerCapture_->start();
+    if (innerCapture_->start()) {
+        return true;
+    }
+
+    capturing_ = false;
+    return false;
 }
 
 bool UiElementCapture::stop()
@@ -121,6 +128,11 @@ bool UiElementCapture::stop()
     cropRtv_.Reset();
     cropTexture_.Reset();
     return true;
+}
+
+void UiElementCapture::handleInnerError(const std::string& err)
+{
+    reportError("UiElementCapture(inner): " + err);
 }
 
 void UiElementCapture::setFrameCallback(FrameCallback callback)

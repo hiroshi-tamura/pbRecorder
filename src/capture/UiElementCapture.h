@@ -36,6 +36,7 @@ private:
     bool rootWindowRect(RegionRect& rect) const;
     void onFullFrame(const VideoFrame& frame);
     bool recreateCropTexture();
+    void handleInnerError(const std::string& err);
     void reportError(const std::string& msg);
 
     std::unique_ptr<ICaptureSource> innerCapture_;

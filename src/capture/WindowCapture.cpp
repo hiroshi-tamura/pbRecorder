@@ -156,14 +156,8 @@ bool WindowCapture::captureFrame() {
 
     BOOL ok = PrintWindow(config_.targetWindow, memDC_, PW_RENDERFULLCONTENT_FLAG);
     if (!ok) {
-        // Fallback: try BitBlt from window DC
-        HDC windowDC = GetDC(config_.targetWindow);
-        if (windowDC) {
-            BitBlt(memDC_, 0, 0, w, h, windowDC, 0, 0, SRCCOPY);
-            ReleaseDC(config_.targetWindow, windowDC);
-        } else {
-            return false;
-        }
+        reportError("WindowCapture: PrintWindow failed");
+        return false;
     }
 
     // Composite cursor if needed

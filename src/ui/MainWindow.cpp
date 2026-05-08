@@ -124,7 +124,12 @@ QImage grabWindowRelativeRect(HWND hwnd, const pb::RegionRect& windowRect, const
     HGDIOBJ oldFull = SelectObject(fullDc, fullBitmap);
     static constexpr UINT PW_RENDERFULLCONTENT_FLAG = 0x00000002;
     if (!PrintWindow(hwnd, fullDc, PW_RENDERFULLCONTENT_FLAG)) {
-        BitBlt(fullDc, 0, 0, windowRect.width, windowRect.height, screenDc, windowRect.x, windowRect.y, SRCCOPY | CAPTUREBLT);
+        SelectObject(fullDc, oldFull);
+        DeleteObject(fullBitmap);
+        DeleteDC(cropDc);
+        DeleteDC(fullDc);
+        ReleaseDC(nullptr, screenDc);
+        return {};
     }
 
     BITMAPINFO bmi{};
@@ -1869,12 +1874,16 @@ void MainWindow::saveCurrentAsPreset(const QString& name)
     p["videoQuality"] = ui->videoQualitySlider->value();
     p["audioCodec"] = ui->audioCodecCombo->currentIndex();
     p["audioBitrate"] = ui->audioBitrateSpinBox->value();
+    p["audioSampleRate"] = ui->audioSampleRateCombo->currentIndex();
+    p["audioBitDepth"] = ui->audioBitDepthCombo->currentIndex();
+    p["vorbisQuality"] = ui->vorbisQualitySlider->value();
     p["outputAudioIndex"] = ui->outputAudioCombo->currentIndex();
     p["inputAudioIndex"] = ui->inputAudioCombo->currentIndex();
     p["realtimeEncode"] = ui->realtimeEncodeCheck->isChecked();
     p["hwEncoder"] = ui->hwEncoderCheck->isChecked();
     p["h264Profile"] = ui->h264ProfileCombo->currentIndex();
     p["h264Level"] = ui->h264LevelCombo->currentIndex();
+    p["autoAdjust"] = ui->autoAdjustCheck->isChecked();
     p["captureCursor"] = ui->captureCursorCheck->isChecked();
     p["uiElementCaptureFromWindow"] = ui->uiElementWindowCaptureCheck->isChecked();
 
@@ -1950,6 +1959,12 @@ void MainWindow::applyPreset(const QString& name)
         ui->audioBitrateSpinBox->setValue(ab);
         ui->audioBitrateSlider->setValue(ab);
     }
+    if (p.contains("audioSampleRate"))
+        ui->audioSampleRateCombo->setCurrentIndex(p["audioSampleRate"].toInt());
+    if (p.contains("audioBitDepth"))
+        ui->audioBitDepthCombo->setCurrentIndex(p["audioBitDepth"].toInt());
+    if (p.contains("vorbisQuality"))
+        ui->vorbisQualitySlider->setValue(p["vorbisQuality"].toInt());
     if (p.contains("outputAudioIndex")) {
         int i = p["outputAudioIndex"].toInt();
         if (i >= 0 && i < ui->outputAudioCombo->count())
@@ -1968,6 +1983,8 @@ void MainWindow::applyPreset(const QString& name)
         ui->h264ProfileCombo->setCurrentIndex(p["h264Profile"].toInt());
     if (p.contains("h264Level"))
         ui->h264LevelCombo->setCurrentIndex(p["h264Level"].toInt());
+    if (p.contains("autoAdjust"))
+        ui->autoAdjustCheck->setChecked(p["autoAdjust"].toBool());
     if (p.contains("captureCursor"))
         ui->captureCursorCheck->setChecked(p["captureCursor"].toBool());
     if (p.contains("uiElementCaptureFromWindow"))
@@ -2025,12 +2042,16 @@ void MainWindow::saveSettings()
     s["videoQuality"] = ui->videoQualitySlider->value();
     s["audioCodec"] = ui->audioCodecCombo->currentIndex();
     s["audioBitrate"] = ui->audioBitrateSpinBox->value();
+    s["audioSampleRate"] = ui->audioSampleRateCombo->currentIndex();
+    s["audioBitDepth"] = ui->audioBitDepthCombo->currentIndex();
+    s["vorbisQuality"] = ui->vorbisQualitySlider->value();
     s["outputAudioIndex"] = ui->outputAudioCombo->currentIndex();
     s["inputAudioIndex"] = ui->inputAudioCombo->currentIndex();
     s["realtimeEncode"] = ui->realtimeEncodeCheck->isChecked();
     s["hwEncoder"] = ui->hwEncoderCheck->isChecked();
     s["h264Profile"] = ui->h264ProfileCombo->currentIndex();
     s["h264Level"] = ui->h264LevelCombo->currentIndex();
+    s["autoAdjust"] = ui->autoAdjustCheck->isChecked();
     s["captureCursor"] = ui->captureCursorCheck->isChecked();
     s["uiElementCaptureFromWindow"] = ui->uiElementWindowCaptureCheck->isChecked();
     s["asioOutStartCh"] = ui->asioOutStartChSpin->value();
@@ -2133,6 +2154,12 @@ void MainWindow::loadSettings()
         ui->audioBitrateSpinBox->setValue(ab);
         ui->audioBitrateSlider->setValue(ab);
     }
+    if (s.contains("audioSampleRate"))
+        ui->audioSampleRateCombo->setCurrentIndex(s["audioSampleRate"].toInt());
+    if (s.contains("audioBitDepth"))
+        ui->audioBitDepthCombo->setCurrentIndex(s["audioBitDepth"].toInt());
+    if (s.contains("vorbisQuality"))
+        ui->vorbisQualitySlider->setValue(s["vorbisQuality"].toInt());
     if (s.contains("outputAudioIndex")) {
         int idx = s["outputAudioIndex"].toInt();
         if (idx >= 0 && idx < ui->outputAudioCombo->count())
@@ -2159,6 +2186,8 @@ void MainWindow::loadSettings()
         ui->h264ProfileCombo->setCurrentIndex(s["h264Profile"].toInt());
     if (s.contains("h264Level"))
         ui->h264LevelCombo->setCurrentIndex(s["h264Level"].toInt());
+    if (s.contains("autoAdjust"))
+        ui->autoAdjustCheck->setChecked(s["autoAdjust"].toBool());
     if (s.contains("captureCursor"))
         ui->captureCursorCheck->setChecked(s["captureCursor"].toBool());
     if (s.contains("uiElementCaptureFromWindow"))
