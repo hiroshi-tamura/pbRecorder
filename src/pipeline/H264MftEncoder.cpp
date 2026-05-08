@@ -366,6 +366,11 @@ bool H264MftEncoder::processOutput(std::vector<EncodedVideoPacket>& packets)
         output.pSample = sample.Get();
         DWORD status = 0;
         hr = encoder_->ProcessOutput(0, 1, &output, &status);
+        Microsoft::WRL::ComPtr<IMFCollection> outputEvents;
+        if (output.pEvents) {
+            outputEvents.Attach(output.pEvents);
+            output.pEvents = nullptr;
+        }
 
         if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) {
             return true;
@@ -401,10 +406,14 @@ bool H264MftEncoder::processOutput(std::vector<EncodedVideoPacket>& packets)
             }
             const int64_t sampleTimeMs = std::max<int64_t>(0, sampleTime / 10000);
             if (nextOutputTimestampMs_ < 0) {
-                nextOutputTimestampMs_ = sampleTimeMs;
+                packet.timestampMs = sampleTimeMs;
+                nextOutputTimestampMs_ = packet.timestampMs;
+            } else {
+                packet.timestampMs = std::max(sampleTimeMs, nextOutputTimestampMs_);
             }
-            packet.timestampMs = nextOutputTimestampMs_;
             nextOutputTimestampMs_ += packet.durationMs;
+            nextOutputTimestampMs_ = std::max(nextOutputTimestampMs_,
+                                              packet.timestampMs + packet.durationMs);
             packet.keyframe = cleanPoint != 0;
             packets.push_back(std::move(packet));
         }

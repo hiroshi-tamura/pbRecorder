@@ -70,6 +70,10 @@ bool RegionCapture::initialize(const CaptureConfig& config, ID3D11Device* device
     }
 
     // Clamp offsets to valid range
+    if (offsetX_ >= static_cast<int>(screenWidth_) || offsetY_ >= static_cast<int>(screenHeight_)) {
+        reportError("RegionCapture::initialize: selected region is outside the selected monitor");
+        return false;
+    }
     offsetX_ = std::max(0, offsetX_);
     offsetY_ = std::max(0, offsetY_);
 
@@ -79,6 +83,10 @@ bool RegionCapture::initialize(const CaptureConfig& config, ID3D11Device* device
     }
     if (offsetY_ + static_cast<int>(height_) > static_cast<int>(screenHeight_)) {
         height_ = screenHeight_ - static_cast<uint32_t>(offsetY_);
+    }
+    if (width_ == 0 || height_ == 0) {
+        reportError("RegionCapture::initialize: selected region has no visible area");
+        return false;
     }
 
     // Set up the frame callback from the inner capture

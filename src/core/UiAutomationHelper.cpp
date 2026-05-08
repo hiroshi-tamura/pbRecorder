@@ -73,7 +73,7 @@ UiAutomationHelper::~UiAutomationHelper()
 {
     walker_.Reset();
     automation_.Reset();
-    if (comInitialized_) {
+    if (comInitialized_ && GetCurrentThreadId() == comThreadId_) {
         CoUninitialize();
     }
 }
@@ -87,6 +87,7 @@ bool UiAutomationHelper::initialize()
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (SUCCEEDED(hr)) {
         comInitialized_ = true;
+        comThreadId_ = GetCurrentThreadId();
     } else if (hr != RPC_E_CHANGED_MODE) {
         setError("UIAutomation COM initialization failed: " + hrText(hr));
         return false;

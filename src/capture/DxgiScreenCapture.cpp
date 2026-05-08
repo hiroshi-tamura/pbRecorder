@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <exception>
+#include <string>
 
 namespace pb {
 
@@ -167,7 +169,15 @@ void DxgiScreenCapture::captureLoop() {
 
                 std::lock_guard<std::mutex> lock(callbackMutex_);
                 if (frameCallback_) {
-                    frameCallback_(vf);
+                    try {
+                        frameCallback_(vf);
+                    } catch (const std::exception& e) {
+                        reportError(std::string("DxgiScreenCapture callback failed: ") + e.what());
+                        running_.store(false);
+                    } catch (...) {
+                        reportError("DxgiScreenCapture callback failed with an unknown error");
+                        running_.store(false);
+                    }
                 }
             }
         }

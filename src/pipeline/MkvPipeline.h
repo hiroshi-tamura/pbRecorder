@@ -155,6 +155,7 @@ private:
     uint64_t codecPrivatePlaceholderSize_ = 0;
     int64_t clusterStartTimestamp_ = -1;
     int64_t lastClusterTimestamp_ = 0;
+    uint64_t currentClusterPosition_ = 0;
     static constexpr int64_t CLUSTER_DURATION_MS = 1000;
 
     static constexpr uint8_t VIDEO_TRACK_NUM = 1;
@@ -172,6 +173,8 @@ private:
 
     uint64_t seekHeadPlaceholderPos_ = 0;
     uint64_t seekHeadPlaceholderSize_ = 0;
+    uint64_t tracksPosition_ = 0;
+    uint64_t cuesPosition_ = 0;
     int64_t maxTimestampMs_ = 0;
     uint64_t segmentInfoPos_ = 0;
     uint64_t durationPlaceholderPos_ = 0;

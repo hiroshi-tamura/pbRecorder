@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include <Windows.h>
 #include <uiautomationclient.h>
 #include <wrl/client.h>
 
@@ -60,6 +61,7 @@ private:
     Microsoft::WRL::ComPtr<IUIAutomationTreeWalker> walker_;
     bool initialized_ = false;
     bool comInitialized_ = false;
+    DWORD comThreadId_ = 0;
     std::string lastError_;
 };
 

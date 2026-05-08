@@ -70,8 +70,20 @@ QImage grabPhysicalScreenRect(const pb::RegionRect& rect)
     }
 
     HDC memDc = CreateCompatibleDC(screenDc);
+    if (!memDc) {
+        DeleteObject(bitmap);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
     HGDIOBJ oldObj = SelectObject(memDc, bitmap);
-    BitBlt(memDc, 0, 0, rect.width, rect.height, screenDc, rect.x, rect.y, SRCCOPY | CAPTUREBLT);
+    if (!oldObj ||
+        !BitBlt(memDc, 0, 0, rect.width, rect.height, screenDc, rect.x, rect.y, SRCCOPY | CAPTUREBLT)) {
+        if (oldObj) SelectObject(memDc, oldObj);
+        DeleteDC(memDc);
+        DeleteObject(bitmap);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
 
     QImage image(static_cast<const uchar*>(bits), rect.width, rect.height,
                  rect.width * 4, QImage::Format_ARGB32);
@@ -121,7 +133,20 @@ QImage grabWindowRelativeRect(HWND hwnd, const pb::RegionRect& windowRect, const
     }
 
     HBITMAP fullBitmap = CreateCompatibleBitmap(screenDc, windowRect.width, windowRect.height);
+    if (!fullBitmap) {
+        DeleteDC(cropDc);
+        DeleteDC(fullDc);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
     HGDIOBJ oldFull = SelectObject(fullDc, fullBitmap);
+    if (!oldFull) {
+        DeleteObject(fullBitmap);
+        DeleteDC(cropDc);
+        DeleteDC(fullDc);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
     static constexpr UINT PW_RENDERFULLCONTENT_FLAG = 0x00000002;
     if (!PrintWindow(hwnd, fullDc, PW_RENDERFULLCONTENT_FLAG)) {
         SelectObject(fullDc, oldFull);
@@ -142,11 +167,38 @@ QImage grabWindowRelativeRect(HWND hwnd, const pb::RegionRect& windowRect, const
 
     void* bits = nullptr;
     HBITMAP cropBitmap = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!cropBitmap || !bits) {
+        if (cropBitmap) DeleteObject(cropBitmap);
+        SelectObject(fullDc, oldFull);
+        DeleteObject(fullBitmap);
+        DeleteDC(cropDc);
+        DeleteDC(fullDc);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
     HGDIOBJ oldCrop = SelectObject(cropDc, cropBitmap);
+    if (!oldCrop) {
+        DeleteObject(cropBitmap);
+        SelectObject(fullDc, oldFull);
+        DeleteObject(fullBitmap);
+        DeleteDC(cropDc);
+        DeleteDC(fullDc);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
 
     const int srcX = targetRect.x - windowRect.x;
     const int srcY = targetRect.y - windowRect.y;
-    BitBlt(cropDc, 0, 0, targetRect.width, targetRect.height, fullDc, srcX, srcY, SRCCOPY);
+    if (!BitBlt(cropDc, 0, 0, targetRect.width, targetRect.height, fullDc, srcX, srcY, SRCCOPY)) {
+        SelectObject(cropDc, oldCrop);
+        SelectObject(fullDc, oldFull);
+        DeleteObject(cropBitmap);
+        DeleteObject(fullBitmap);
+        DeleteDC(cropDc);
+        DeleteDC(fullDc);
+        ReleaseDC(nullptr, screenDc);
+        return {};
+    }
 
     QImage image(static_cast<const uchar*>(bits), targetRect.width, targetRect.height,
                  targetRect.width * 4, QImage::Format_ARGB32);
@@ -356,6 +408,11 @@ MainWindow::MainWindow(QWidget *parent)
     ui->saveAsPresetBtn->setText(QChar(0xE710)); // + (add new) icon
     ui->deletePresetBtn->setText(QChar(0xE74D)); // delete icon
     ui->settingsBtn->setText(QChar(0xE713)); // gear icon
+    while (ui->audioBitDepthCombo->count() > 1) {
+        ui->audioBitDepthCombo->removeItem(1);
+    }
+    ui->audioBitDepthCombo->setToolTip(
+        QStringLiteral("PCM output is currently written as 16-bit integer samples."));
 
     setupConnections();
 
@@ -628,9 +685,18 @@ void MainWindow::setupConnections()
     // Quality slider tooltips: dynamic value display
     auto setupQualityTooltip = [](QSlider *s) {
         if (!s) return;
-        s->setToolTip(QString("%1 %").arg(s->value()));
+        const QString base = s->toolTip();
+        s->setProperty("baseToolTip", base);
+        auto update = [s](int v) {
+            const QString baseText = s->property("baseToolTip").toString();
+            const QString valueText = QString("%1 %").arg(v);
+            s->setToolTip(baseText.isEmpty() ? valueText : QString("%1 (%2)").arg(baseText, valueText));
+        };
+        update(s->value());
         connect(s, &QSlider::valueChanged, s, [s](int v) {
-            s->setToolTip(QString("%1 %").arg(v));
+            const QString baseText = s->property("baseToolTip").toString();
+            const QString valueText = QString("%1 %").arg(v);
+            s->setToolTip(baseText.isEmpty() ? valueText : QString("%1 (%2)").arg(baseText, valueText));
         });
     };
     setupQualityTooltip(ui->videoQualitySlider);
@@ -1225,7 +1291,8 @@ void MainWindow::populateAudioDevices()
     for (const auto& dev : outputAudioDevices_) {
         QString prefix;
         if (dev.type == pb::AudioDeviceType::ASIO_Output) prefix = "[ASIO] ";
-        ui->outputAudioCombo->addItem(prefix + QString::fromStdWString(dev.name));
+        ui->outputAudioCombo->addItem(prefix + QString::fromStdWString(dev.name),
+                                      QString::fromStdWString(dev.id));
     }
     // Default: select first device if available
     if (!outputAudioDevices_.empty()) {
@@ -1237,7 +1304,8 @@ void MainWindow::populateAudioDevices()
     for (const auto& dev : inputAudioDevices_) {
         QString prefix;
         if (dev.type == pb::AudioDeviceType::ASIO) prefix = "[ASIO] ";
-        ui->inputAudioCombo->addItem(prefix + QString::fromStdWString(dev.name));
+        ui->inputAudioCombo->addItem(prefix + QString::fromStdWString(dev.name),
+                                     QString::fromStdWString(dev.id));
     }
 }
 
@@ -1385,6 +1453,12 @@ void MainWindow::onRecord()
                    : "Please select a UI region first.");
             return;
         }
+        if (!audioCodecCompatible_) {
+            QMessageBox::warning(this, errTitle,
+                ja ? "現在のコンテナと音声コーデックの組み合わせは使用できません。"
+                   : "The current container/audio codec combination is not supported.");
+            return;
+        }
 
         pb::RecordingConfig config = buildRecordingConfig();
         recordingUsesOutputAudio_ = config.recordAudio && config.useOutputAudio;
@@ -1435,9 +1509,10 @@ void MainWindow::onRecord()
         // Stop recording
         QString outPath = getOutputFilePath();
         int64_t finalSize = 0;
+        bool stopOk = true;
         if (session_) {
             finalSize = session_->getFileSize();
-            session_->stop();
+            stopOk = session_->stop();
             session_.reset();
         }
         recordingUsesOutputAudio_ = false;
@@ -1455,10 +1530,18 @@ void MainWindow::onRecord()
             if (openFolderBtn_) openFolderBtn_->setEnabled(true);
             QString name = fi.fileName();
             QString sizeStr = formatFileSize(finalSize);
-            statusBar()->showMessage(
-                (ja ? QStringLiteral("保存しました: %1 (%2)")
-                    : QStringLiteral("Saved: %1 (%2)"))
-                    .arg(name).arg(sizeStr));
+            if (stopOk) {
+                statusBar()->showMessage(
+                    (ja ? QStringLiteral("保存しました: %1 (%2)")
+                        : QStringLiteral("Saved: %1 (%2)"))
+                        .arg(name).arg(sizeStr));
+            } else {
+                statusBar()->showMessage(
+                    (ja ? QStringLiteral("停止処理に失敗しました。ファイルが不完全またはシーク不能な可能性があります: %1 (%2)")
+                        : QStringLiteral("Finalization failed. File may be incomplete or not seekable: %1 (%2)"))
+                        .arg(name).arg(sizeStr),
+                    10000);
+            }
         } else {
             statusBar()->showMessage(
                 ja ? "録画を停止しました" : "Recording stopped",
@@ -1879,6 +1962,12 @@ void MainWindow::saveCurrentAsPreset(const QString& name)
     p["vorbisQuality"] = ui->vorbisQualitySlider->value();
     p["outputAudioIndex"] = ui->outputAudioCombo->currentIndex();
     p["inputAudioIndex"] = ui->inputAudioCombo->currentIndex();
+    p["outputAudioId"] = ui->outputAudioCombo->currentData(Qt::UserRole).toString();
+    p["inputAudioId"] = ui->inputAudioCombo->currentData(Qt::UserRole).toString();
+    p["asioOutStartCh"] = ui->asioOutStartChSpin->value();
+    p["asioOutEndCh"] = ui->asioOutEndChSpin->value();
+    p["asioStartCh"] = ui->asioStartChSpin->value();
+    p["asioEndCh"] = ui->asioEndChSpin->value();
     p["realtimeEncode"] = ui->realtimeEncodeCheck->isChecked();
     p["hwEncoder"] = ui->hwEncoderCheck->isChecked();
     p["h264Profile"] = ui->h264ProfileCombo->currentIndex();
@@ -1965,16 +2054,32 @@ void MainWindow::applyPreset(const QString& name)
         ui->audioBitDepthCombo->setCurrentIndex(p["audioBitDepth"].toInt());
     if (p.contains("vorbisQuality"))
         ui->vorbisQualitySlider->setValue(p["vorbisQuality"].toInt());
-    if (p.contains("outputAudioIndex")) {
+    if (p.contains("outputAudioId")) {
+        int i = ui->outputAudioCombo->findData(p["outputAudioId"].toString(), Qt::UserRole);
+        if (i >= 0)
+            ui->outputAudioCombo->setCurrentIndex(i);
+    } else if (p.contains("outputAudioIndex")) {
         int i = p["outputAudioIndex"].toInt();
         if (i >= 0 && i < ui->outputAudioCombo->count())
             ui->outputAudioCombo->setCurrentIndex(i);
     }
-    if (p.contains("inputAudioIndex")) {
+    if (p.contains("inputAudioId")) {
+        int i = ui->inputAudioCombo->findData(p["inputAudioId"].toString(), Qt::UserRole);
+        if (i >= 0)
+            ui->inputAudioCombo->setCurrentIndex(i);
+    } else if (p.contains("inputAudioIndex")) {
         int i = p["inputAudioIndex"].toInt();
         if (i >= 0 && i < ui->inputAudioCombo->count())
             ui->inputAudioCombo->setCurrentIndex(i);
     }
+    if (p.contains("asioOutStartCh"))
+        ui->asioOutStartChSpin->setValue(p["asioOutStartCh"].toInt());
+    if (p.contains("asioOutEndCh"))
+        ui->asioOutEndChSpin->setValue(p["asioOutEndCh"].toInt());
+    if (p.contains("asioStartCh"))
+        ui->asioStartChSpin->setValue(p["asioStartCh"].toInt());
+    if (p.contains("asioEndCh"))
+        ui->asioEndChSpin->setValue(p["asioEndCh"].toInt());
     if (p.contains("realtimeEncode"))
         ui->realtimeEncodeCheck->setChecked(p["realtimeEncode"].toBool());
     if (p.contains("hwEncoder"))
@@ -2047,6 +2152,8 @@ void MainWindow::saveSettings()
     s["vorbisQuality"] = ui->vorbisQualitySlider->value();
     s["outputAudioIndex"] = ui->outputAudioCombo->currentIndex();
     s["inputAudioIndex"] = ui->inputAudioCombo->currentIndex();
+    s["outputAudioId"] = ui->outputAudioCombo->currentData(Qt::UserRole).toString();
+    s["inputAudioId"] = ui->inputAudioCombo->currentData(Qt::UserRole).toString();
     s["realtimeEncode"] = ui->realtimeEncodeCheck->isChecked();
     s["hwEncoder"] = ui->hwEncoderCheck->isChecked();
     s["h264Profile"] = ui->h264ProfileCombo->currentIndex();
@@ -2130,8 +2237,12 @@ void MainWindow::loadSettings()
         for (const QJsonValue& value : s["uiElementChildPath"].toArray()) {
             selectedUiElement_.childPath.push_back(value.toInt());
         }
-        ui->uiElementInfoLabel->setText(formatUiElementInfo(selectedUiElement_));
-        ui->uiElementInfoLabel->setStyleSheet("");
+        if (selectedUiElement_.rootWindow && IsWindow(selectedUiElement_.rootWindow)) {
+            ui->uiElementInfoLabel->setText(formatUiElementInfo(selectedUiElement_));
+            ui->uiElementInfoLabel->setStyleSheet("");
+        } else {
+            uiElementSelected_ = false;
+        }
     }
 
     if (s.contains("videoCodec"))
@@ -2160,12 +2271,20 @@ void MainWindow::loadSettings()
         ui->audioBitDepthCombo->setCurrentIndex(s["audioBitDepth"].toInt());
     if (s.contains("vorbisQuality"))
         ui->vorbisQualitySlider->setValue(s["vorbisQuality"].toInt());
-    if (s.contains("outputAudioIndex")) {
+    if (s.contains("outputAudioId")) {
+        int idx = ui->outputAudioCombo->findData(s["outputAudioId"].toString(), Qt::UserRole);
+        if (idx >= 0)
+            ui->outputAudioCombo->setCurrentIndex(idx);
+    } else if (s.contains("outputAudioIndex")) {
         int idx = s["outputAudioIndex"].toInt();
         if (idx >= 0 && idx < ui->outputAudioCombo->count())
             ui->outputAudioCombo->setCurrentIndex(idx);
     }
-    if (s.contains("inputAudioIndex")) {
+    if (s.contains("inputAudioId")) {
+        int idx = ui->inputAudioCombo->findData(s["inputAudioId"].toString(), Qt::UserRole);
+        if (idx >= 0)
+            ui->inputAudioCombo->setCurrentIndex(idx);
+    } else if (s.contains("inputAudioIndex")) {
         int idx = s["inputAudioIndex"].toInt();
         if (idx >= 0 && idx < ui->inputAudioCombo->count())
             ui->inputAudioCombo->setCurrentIndex(idx);
@@ -2351,7 +2470,11 @@ void MainWindow::retranslateUi()
     ui->containerCombo->setToolTip(ja ? "コンテナ形式" : "Container format");
     ui->fpsSpinBox->setToolTip(ja ? "フレームレート" : "Frames per second");
     ui->videoBitrateSpinBox->setToolTip(ja ? "映像ビットレート (kbps)" : "Video bitrate (kbps)");
-    ui->videoQualitySlider->setToolTip(ja ? "エンコード品質 0–100" : "Encoding quality 0–100");
+    {
+        const QString base = ja ? QStringLiteral("エンコード品質 0–100") : QStringLiteral("Encoding quality 0–100");
+        ui->videoQualitySlider->setProperty("baseToolTip", base);
+        ui->videoQualitySlider->setToolTip(QStringLiteral("%1 (%2 %)").arg(base).arg(ui->videoQualitySlider->value()));
+    }
     ui->realtimeEncodeCheck->setToolTip(ja ? "リアルタイムエンコード (推奨)" : "Realtime encoding (recommended)");
     ui->h264ProfileCombo->setToolTip(ja ? "H.264 プロファイル" : "H.264 profile");
     ui->h264LevelCombo->setToolTip(ja ? "H.264 レベル" : "H.264 level");
@@ -2373,7 +2496,13 @@ void MainWindow::retranslateUi()
     ui->inputAudioCombo->setToolTip(ja ? "入力 (マイク) デバイス" : "Microphone / input device");
     ui->audioCodecCombo->setToolTip(ja ? "音声コーデック" : "Audio codec");
     ui->audioBitrateSlider->setToolTip(ja ? "音声ビットレート (kbps)" : "Audio bitrate (kbps)");
-    ui->vorbisQualitySlider->setToolTip(ja ? "エンコード品質 0–100" : "Encoding quality 0–100");
+    ui->audioBitDepthCombo->setToolTip(ja ? "PCM出力は現在16-bit整数で保存されます"
+                                         : "PCM output is currently written as 16-bit integer samples");
+    {
+        const QString base = ja ? QStringLiteral("エンコード品質 0–100") : QStringLiteral("Encoding quality 0–100");
+        ui->vorbisQualitySlider->setProperty("baseToolTip", base);
+        ui->vorbisQualitySlider->setToolTip(QStringLiteral("%1 (%2 %)").arg(base).arg(ui->vorbisQualitySlider->value()));
+    }
 
     // Output group
     ui->outputGroupBox->setTitle(ja ? "出力" : "Output");
@@ -2402,8 +2531,15 @@ void MainWindow::retranslateUi()
     }
     const QString hotkeyText = recordHotkey_.toString(QKeySequence::NativeText);
     ui->recordBtn->setToolTip(
-        (ja ? QStringLiteral("録画開始/停止 (Ctrl+R / %1)")
-            : QStringLiteral("Start/stop recording (Ctrl+R / %1)")).arg(hotkeyText));
+        hotkeyText.isEmpty()
+            ? (ja ? QStringLiteral("録画開始/停止 (Ctrl+R)")
+                  : QStringLiteral("Start/stop recording (Ctrl+R)"))
+            : (ja ? QStringLiteral("録画開始/停止 (Ctrl+R / グローバル: %1)")
+                  : QStringLiteral("Start/stop recording (Ctrl+R / global: %1)")).arg(hotkeyText));
+    ui->asioOutStartChSpin->setPrefix(ja ? QStringLiteral("開始: ") : QStringLiteral("Start: "));
+    ui->asioOutEndChSpin->setPrefix(ja ? QStringLiteral("終了: ") : QStringLiteral("End: "));
+    ui->asioStartChSpin->setPrefix(ja ? QStringLiteral("開始: ") : QStringLiteral("Start: "));
+    ui->asioEndChSpin->setPrefix(ja ? QStringLiteral("終了: ") : QStringLiteral("End: "));
     ui->pauseBtn->setToolTip(ja ? "録画を一時停止/再開" : "Pause/resume recording");
 
     // Open folder button (status bar permanent widget)

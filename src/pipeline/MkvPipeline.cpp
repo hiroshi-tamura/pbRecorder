@@ -151,34 +151,71 @@ bool MkvPipeline::stop() {
     recording_ = false;
 
     if (useLiveMuxing()) {
-        drainAudioEncoder();
+        bool ok = true;
+        try {
+            ok = drainAudioEncoder() && ok;
 
-        std::vector<EncodedVideoPacket> remaining;
-        if (h264Encoder_) {
-            h264Encoder_->drain(remaining);
-            writeEncodedVideoPackets(remaining);
+            std::vector<EncodedVideoPacket> remaining;
+            if (h264Encoder_) {
+                ok = h264Encoder_->drain(remaining) && ok;
+                ok = writeEncodedVideoPackets(remaining) && ok;
+            }
+        } catch (const std::exception& e) {
+            ok = false;
+            reportError(std::string("MkvPipeline encoder drain failed: ") + e.what());
+        } catch (...) {
+            ok = false;
+            reportError("MkvPipeline encoder drain failed with an unknown error");
         }
 
-        {
+        try {
             std::lock_guard<std::mutex> lock(mkvWriteMutex_);
             if (spsPpsExtracted_) {
                 patchVideoCodecPrivate();
             }
             finalizeMkvFile();
+        } catch (const std::exception& e) {
+            ok = false;
+            reportError(std::string("MkvPipeline finalization failed: ") + e.what());
+            if (mkvFile_) {
+                try {
+                    mkvFile_->close();
+                } catch (...) {
+                }
+                mkvFile_.reset();
+            }
+        } catch (...) {
+            ok = false;
+            reportError("MkvPipeline finalization failed with an unknown error");
+            if (mkvFile_) {
+                try {
+                    mkvFile_->close();
+                } catch (...) {
+                }
+                mkvFile_.reset();
+            }
         }
 
         if (h264Encoder_) {
             h264Encoder_->shutdown();
         }
-        return true;
+        return ok;
     }
 
-    // Stop SinkWriter (finalizes temp .mp4), then remux temp .mp4 to final .mkv.
-    sinkWriter_->stop();
-    bool result = remuxToMkv();
-    DeleteFileW(tempMp4Path_.c_str());
+    try {
+        // Stop SinkWriter (finalizes temp .mp4), then remux temp .mp4 to final .mkv.
+        if (!sinkWriter_->stop()) {
+            DeleteFileW(tempMp4Path_.c_str());
+            return false;
+        }
+        bool result = remuxToMkv();
+        DeleteFileW(tempMp4Path_.c_str());
 
-    return result;
+        return result;
+    } catch (const std::exception& e) {
+        reportError(std::string("MkvPipeline stop failed: ") + e.what());
+        return false;
+    }
 }
 
 bool MkvPipeline::writeVideoFrame(const VideoFrame& frame) {
@@ -485,12 +522,7 @@ bool MkvPipeline::encodeAudioOpus(const AudioBuffer& buffer,
 
     std::vector<uint8_t> encodedBuf(4000);
     if (opusNextTimestampMs_ < 0) {
-        const int64_t codecDelayMs = config_.audio.sampleRate > 0
-            ? (static_cast<int64_t>(opusLookaheadSamples_) * 1000LL +
-               static_cast<int64_t>(config_.audio.sampleRate) - 1) /
-                  static_cast<int64_t>(config_.audio.sampleRate)
-            : 0;
-        opusNextTimestampMs_ = toMkvTimestamp(buffer.timestamp) + codecDelayMs;
+        opusNextTimestampMs_ = toMkvTimestamp(buffer.timestamp);
     }
     const int64_t frameDurationMs = 20;
 
@@ -595,9 +627,7 @@ bool MkvPipeline::encodeAudioVorbis(const AudioBuffer& buffer,
                                timestampMs,
                                durationMs});
             vorbisLastGranule_ = packetEndGranule;
-            if (hasDefinitiveGranule) {
-                vorbisNextTimestampMs_ = timestampMs + durationMs;
-            }
+            vorbisNextTimestampMs_ = timestampMs + durationMs;
         }
     }
 
@@ -672,9 +702,7 @@ bool MkvPipeline::drainAudioEncoder()
                     : (vorbisStartTimestampMs_ >= 0 ? vorbisStartTimestampMs_ : maxTimestampMs_);
                 writeAudioPacketLive(std::move(packet), tsMs, durationMs);
                 vorbisLastGranule_ = packetEndGranule;
-                if (hasDefinitiveGranule) {
-                    vorbisNextTimestampMs_ = tsMs + durationMs;
-                }
+                vorbisNextTimestampMs_ = tsMs + durationMs;
             }
         }
     }
@@ -1356,6 +1384,7 @@ bool MkvPipeline::writeTracks() {
 
     // ---- Write Tracks element ----
     uint64_t tracksPos = mkvFile_->getFilePointer();
+    tracksPosition_ = tracksPos - segmentDataStart_;
     uint8_t tracksId[] = {0x16, 0x54, 0xAE, 0x6B};
     mkvFile_->write(tracksId, 4);
 
@@ -1431,6 +1460,7 @@ void MkvPipeline::writeClusterData(uint8_t trackNum, int64_t timestampMs,
     if (needNewCluster) {
         flushCurrentCluster();
 
+        currentClusterPosition_ = mkvFile_->getFilePointer() - segmentDataStart_;
         currentCluster_ = new KaxCluster();
         currentCluster_->SetParent(*segment_);
         currentCluster_->InitTimecode(
@@ -1442,21 +1472,19 @@ void MkvPipeline::writeClusterData(uint8_t trackNum, int64_t timestampMs,
             CueEntry cue;
             cue.timestampMs = timestampMs;
             cue.trackNum = trackNum;
-            cue.clusterPosition = mkvFile_->getFilePointer() - segmentDataStart_;
+            cue.clusterPosition = currentClusterPosition_;
             cueEntries_.push_back(cue);
         }
     } else if (keyframe && trackNum == VIDEO_TRACK_NUM) {
         CueEntry cue;
         cue.timestampMs = timestampMs;
         cue.trackNum = trackNum;
-        cue.clusterPosition = lastClusterTimestamp_;
+        cue.clusterPosition = currentClusterPosition_;
         cueEntries_.push_back(cue);
     }
 
-    auto* dataCopy = static_cast<uint8*>(std::malloc(frameSize));
-    std::memcpy(dataCopy, frameData, frameSize);
     auto* dataBuf = new DataBuffer(
-        dataCopy,
+        const_cast<uint8*>(frameData),
         static_cast<uint32>(frameSize),
         nullptr,
         true
@@ -1477,7 +1505,7 @@ void MkvPipeline::writeClusterData(uint8_t trackNum, int64_t timestampMs,
 
 void MkvPipeline::flushCurrentCluster() {
     if (currentCluster_) {
-        lastClusterTimestamp_ = mkvFile_->getFilePointer() - segmentDataStart_;
+        lastClusterTimestamp_ = currentClusterPosition_;
         currentCluster_->Render(*mkvFile_, *cues_, false);
         delete currentCluster_;
         currentCluster_ = nullptr;
@@ -1577,6 +1605,7 @@ void MkvPipeline::writeCues() {
         appendElement(cuesBody, 0xBB, 1, cuePoint);
     }
 
+    cuesPosition_ = mkvFile_->getFilePointer() - segmentDataStart_;
     uint8_t cuesId[] = {0x1C, 0x53, 0xBB, 0x6B};
     mkvFile_->write(cuesId, 4);
 
@@ -1592,8 +1621,110 @@ void MkvPipeline::writeCues() {
 }
 
 void MkvPipeline::writeSeekHead() {
-    // SeekHead is optional for basic playback.
-    // The placeholder space remains as EbmlVoid.
+    if (!mkvFile_ || seekHeadPlaceholderPos_ == 0 || seekHeadPlaceholderSize_ == 0) {
+        return;
+    }
+
+    struct SeekEntry {
+        uint32_t id;
+        int idLen;
+        uint64_t position;
+    };
+
+    std::vector<SeekEntry> entries;
+    if (segmentInfoPos_ >= segmentDataStart_) {
+        entries.push_back({0x1549A966, 4, segmentInfoPos_ - segmentDataStart_});
+    }
+    if (tracksPosition_ > 0) {
+        entries.push_back({0x1654AE6B, 4, tracksPosition_});
+    }
+    if (cuesPosition_ > 0) {
+        entries.push_back({0x1C53BB6B, 4, cuesPosition_});
+    }
+    if (entries.empty()) {
+        return;
+    }
+
+    auto appendId = [](std::vector<uint8_t>& buf, uint32_t id, int len) {
+        for (int i = len - 1; i >= 0; --i) {
+            buf.push_back(static_cast<uint8_t>((id >> (i * 8)) & 0xFF));
+        }
+    };
+    auto appendVint = [](std::vector<uint8_t>& buf, uint64_t val, int len) {
+        uint8_t marker = static_cast<uint8_t>(1 << (8 - len));
+        buf.push_back(marker | static_cast<uint8_t>((val >> ((len - 1) * 8)) & (marker - 1)));
+        for (int i = len - 2; i >= 0; --i) {
+            buf.push_back(static_cast<uint8_t>((val >> (i * 8)) & 0xFF));
+        }
+    };
+    auto appendElement = [&](std::vector<uint8_t>& buf, uint32_t id, int idLen,
+                             const std::vector<uint8_t>& data) {
+        appendId(buf, id, idLen);
+        appendVint(buf, data.size(), data.size() < 128 ? 1 : 2);
+        buf.insert(buf.end(), data.begin(), data.end());
+    };
+    auto appendUintFixed = [&](std::vector<uint8_t>& buf, uint32_t id, int idLen,
+                               uint64_t val, int valLen) {
+        appendId(buf, id, idLen);
+        appendVint(buf, valLen, 1);
+        for (int i = valLen - 1; i >= 0; --i) {
+            buf.push_back(static_cast<uint8_t>((val >> (i * 8)) & 0xFF));
+        }
+    };
+
+    std::vector<uint8_t> body;
+    for (const auto& entry : entries) {
+        std::vector<uint8_t> seek;
+
+        std::vector<uint8_t> seekId;
+        appendId(seekId, entry.id, entry.idLen);
+        appendElement(seek, 0x53AB, 2, seekId);
+        appendUintFixed(seek, 0x53AC, 2, entry.position, 8);
+
+        appendElement(body, 0x4DBB, 2, seek);
+    }
+
+    std::vector<uint8_t> seekHead;
+    appendId(seekHead, 0x114D9B74, 4);
+    appendVint(seekHead, body.size(), body.size() < 128 ? 1 : 2);
+    seekHead.insert(seekHead.end(), body.begin(), body.end());
+
+    if (seekHead.size() > seekHeadPlaceholderSize_ ||
+        seekHeadPlaceholderSize_ - seekHead.size() == 1) {
+        return;
+    }
+
+    const uint64_t savedPos = mkvFile_->getFilePointer();
+    mkvFile_->setFilePointer(seekHeadPlaceholderPos_);
+    mkvFile_->write(seekHead.data(), seekHead.size());
+
+    uint64_t remaining = seekHeadPlaceholderSize_ - seekHead.size();
+    if (remaining >= 2) {
+        uint8_t voidId = 0xEC;
+        mkvFile_->write(&voidId, 1);
+        uint64_t voidDataSize = remaining - 2;
+        if (voidDataSize < 128) {
+            uint8_t size = static_cast<uint8_t>(0x80 | voidDataSize);
+            mkvFile_->write(&size, 1);
+        } else {
+            if (remaining < 3) {
+                mkvFile_->setFilePointer(savedPos);
+                return;
+            }
+            voidDataSize = remaining - 3;
+            uint8_t size[2] = {
+                static_cast<uint8_t>(0x40 | ((voidDataSize >> 8) & 0x3F)),
+                static_cast<uint8_t>(voidDataSize & 0xFF)
+            };
+            mkvFile_->write(size, 2);
+        }
+        std::vector<uint8_t> zeros(static_cast<size_t>(voidDataSize), 0);
+        if (!zeros.empty()) {
+            mkvFile_->write(zeros.data(), zeros.size());
+        }
+    }
+
+    mkvFile_->setFilePointer(savedPos);
 }
 
 void MkvPipeline::patchVideoCodecPrivate() {
@@ -1922,6 +2053,9 @@ void MkvPipeline::releaseResources() {
     cues_.reset();
     cueEntries_.clear();
     bufferedAudioPackets_.clear();
+    currentClusterPosition_ = 0;
+    lastClusterTimestamp_ = 0;
+    clusterStartTimestamp_ = -1;
 
     d3dDevice_.Reset();
 

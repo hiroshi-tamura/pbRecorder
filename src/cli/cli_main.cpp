@@ -6,14 +6,17 @@
 #include <objbase.h>
 
 int main(int argc, char* argv[]) {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool coInitialized = SUCCEEDED(coHr);
 
     QCoreApplication app(argc, argv);
     app.setApplicationName("pbRecorder");
-    app.setApplicationVersion("0.5.5");
+    app.setApplicationVersion("0.5.6");
 
     int result = CliRunner::run(app.arguments());
 
-    CoUninitialize();
+    if (coInitialized) {
+        CoUninitialize();
+    }
     return result;
 }

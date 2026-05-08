@@ -7,15 +7,36 @@
 #include <Windows.h>
 #include <shellscalingapi.h>
 
+#include "cli/CliRunner.h"
 #include "ui/MainWindow.h"
 
 int main(int argc, char* argv[]) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool cliMode = false;
+    for (int i = 1; i < argc; ++i) {
+        if (QString::fromLocal8Bit(argv[i]) == "--cli") {
+            cliMode = true;
+            break;
+        }
+    }
+
+    HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool coInitialized = SUCCEEDED(coHr);
+
+    if (cliMode) {
+        QCoreApplication app(argc, argv);
+        app.setApplicationName("pbRecorder");
+        app.setApplicationVersion("0.5.6");
+        const int result = CliRunner::run(app.arguments());
+        if (coInitialized) {
+            CoUninitialize();
+        }
+        return result;
+    }
 
     QApplication app(argc, argv);
     app.setApplicationName("pbRecorder");
-    app.setApplicationVersion("0.5.5");
+    app.setApplicationVersion("0.5.6");
     app.setOrganizationName("pbRecorder");
 
     app.setStyle(QStyleFactory::create("Fusion"));
@@ -71,6 +92,8 @@ int main(int argc, char* argv[]) {
     }
 
     int result = app.exec();
-    CoUninitialize();
+    if (coInitialized) {
+        CoUninitialize();
+    }
     return result;
 }

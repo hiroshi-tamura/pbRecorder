@@ -10,6 +10,7 @@
 #include <memory>
 #include <functional>
 #include <string>
+#include <mutex>
 
 namespace pb {
 
@@ -71,6 +72,8 @@ private:
     std::atomic<bool> recording_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> initialized_{false};
+    std::atomic<bool> writerFailed_{false};
+    std::mutex stopMutex_;
 
     int64_t pauseOffset_ = 0;
     int64_t pauseStartTime_ = 0;

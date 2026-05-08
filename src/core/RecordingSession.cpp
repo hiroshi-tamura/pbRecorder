@@ -228,7 +228,7 @@ bool RecordingSession::start() {
     pauseOffset_ = 0;
     pauseStartTime_ = 0;
     recordingStartTimestamp_ = currentQpcTime100ns();
-    mediaOriginTimestamp_ = -1;
+    mediaOriginTimestamp_ = recordingStartTimestamp_;
     firstVideoTimestamp_ = -1;
     firstAudioTimestamp_ = -1;
     audioPrimed_ = false;
@@ -266,6 +266,8 @@ bool RecordingSession::start() {
             outputAudioSource_->setErrorCallback([this](const std::string& e) { onError(e); });
             if (!outputAudioSource_->start()) {
                 onError("出力オーディオの開始に失敗しました");
+                stop();
+                return false;
             }
         }
         if (inputAudioSource_) {
@@ -273,6 +275,8 @@ bool RecordingSession::start() {
             inputAudioSource_->setErrorCallback([this](const std::string& e) { onError(e); });
             if (!inputAudioSource_->start()) {
                 onError("入力オーディオの開始に失敗しました");
+                stop();
+                return false;
             }
         }
     }
@@ -281,6 +285,8 @@ bool RecordingSession::start() {
 }
 
 bool RecordingSession::stop() {
+    std::lock_guard<std::mutex> stopLock(stopMutex_);
+
     if (!recording_.load() && !initialized_.load()) {
         return true;
     }
@@ -315,8 +321,12 @@ bool RecordingSession::stop() {
     }
 
     // Finalize pipeline
+    bool stopOk = !writerFailed_.load();
     if (pipeline_) {
-        pipeline_->stop();
+        stopOk = pipeline_->stop() && stopOk;
+        if (!stopOk) {
+            onError("Recording finalization failed. The file may be incomplete or not seekable.");
+        }
     }
 
     // Release resources
@@ -326,8 +336,9 @@ bool RecordingSession::stop() {
     inputAudioSource_.reset();
     pipeline_.reset();
     initialized_.store(false);
+    writerFailed_.store(false);
 
-    return true;
+    return stopOk;
 }
 
 bool RecordingSession::pause() {
@@ -416,7 +427,6 @@ void RecordingSession::onVideoFrame(const VideoFrame& frame) {
         if (firstVideoTimestamp_ < 0) {
             firstVideoTimestamp_ = adjusted.timestamp;
         }
-        ensureMediaOriginLocked(adjusted.timestamp);
         enqueueVideoFrameLocked(std::move(adjusted));
     }
 }
@@ -449,7 +459,6 @@ void RecordingSession::onAudioBuffer(const AudioBuffer& buffer) {
         if (firstAudioTimestamp_ < 0) {
             firstAudioTimestamp_ = adjusted.timestamp;
         }
-        ensureMediaOriginLocked(adjusted.timestamp);
         enqueueAudioBufferLocked(std::move(adjusted));
     }
 }
@@ -461,40 +470,70 @@ void RecordingSession::onError(const std::string& error) {
 }
 
 void RecordingSession::videoWriterThread() {
-    while (recording_.load()) {
+    try {
+        while (recording_.load()) {
+            VideoFrame frame;
+            if (videoQueue_.tryPop(frame, std::chrono::milliseconds(50))) {
+                if (!pipeline_->writeVideoFrame(frame)) {
+                    writerFailed_.store(true);
+                    onError("Failed to write video frame");
+                    break;
+                }
+            }
+        }
+
+        // Drain remaining frames
         VideoFrame frame;
-        if (videoQueue_.tryPop(frame, std::chrono::milliseconds(50))) {
+        while (videoQueue_.tryPop(frame, std::chrono::milliseconds(1))) {
             if (!pipeline_->writeVideoFrame(frame)) {
-                onError("Failed to write video frame");
+                writerFailed_.store(true);
+                onError("Failed to write remaining video frame");
                 break;
             }
         }
-    }
-
-    // Drain remaining frames
-    VideoFrame frame;
-    while (videoQueue_.tryPop(frame, std::chrono::milliseconds(1))) {
-        pipeline_->writeVideoFrame(frame);
+    } catch (const std::exception& e) {
+        writerFailed_.store(true);
+        recording_.store(false);
+        onError(std::string("Video writer thread failed: ") + e.what());
+    } catch (...) {
+        writerFailed_.store(true);
+        recording_.store(false);
+        onError("Video writer thread failed with an unknown error");
     }
 }
 
 void RecordingSession::audioWriterThread() {
     if (!config_.recordAudio) return;
 
-    while (recording_.load()) {
+    try {
+        while (recording_.load()) {
+            AudioBuffer buffer;
+            if (audioQueue_.tryPop(buffer, std::chrono::milliseconds(50))) {
+                if (!writeProcessedAudioBuffer(std::move(buffer))) {
+                    writerFailed_.store(true);
+                    onError("Failed to write audio samples");
+                    break;
+                }
+            }
+        }
+
+        // Drain remaining buffers
         AudioBuffer buffer;
-        if (audioQueue_.tryPop(buffer, std::chrono::milliseconds(50))) {
+        while (audioQueue_.tryPop(buffer, std::chrono::milliseconds(1))) {
             if (!writeProcessedAudioBuffer(std::move(buffer))) {
-                onError("Failed to write audio samples");
+                writerFailed_.store(true);
+                onError("Failed to write remaining audio samples");
                 break;
             }
         }
-    }
-
-    // Drain remaining buffers
-    AudioBuffer buffer;
-    while (audioQueue_.tryPop(buffer, std::chrono::milliseconds(1))) {
-        writeProcessedAudioBuffer(std::move(buffer));
+    } catch (const std::exception& e) {
+        writerFailed_.store(true);
+        recording_.store(false);
+        onError(std::string("Audio writer thread failed: ") + e.what());
+    } catch (...) {
+        writerFailed_.store(true);
+        recording_.store(false);
+        onError("Audio writer thread failed with an unknown error");
     }
 }
 

@@ -13,13 +13,6 @@
 
 namespace pb {
 
-namespace {
-
-constexpr GUID PB_MF_MPEG4SINK_MIN_FRAGMENT_DURATION =
-    {0xa30b570c, 0x8efd, 0x45e8, {0x94, 0xfe, 0x27, 0xc8, 0x4b, 0x5b, 0xdf, 0xf6}};
-
-} // namespace
-
 // ============================================================================
 // Construction / Destruction
 // ============================================================================
@@ -110,6 +103,7 @@ bool SinkWriterPipeline::initialize(const RecordingConfig& config, ID3D11Device*
         firstVideoTimestamp_.store(-1);
         lastVideoTimestamp_.store(0);
         firstAudioTimestamp_.store(-1);
+        nextVideoTimestamp_ = -1;
         surfaceWriteDisabled_ = false;
 
         initialized_ = true;
@@ -153,6 +147,8 @@ bool SinkWriterPipeline::stop() {
                 HRESULT hr = sinkWriter_->Finalize();
                 if (FAILED(hr)) {
                     reportError("SinkWriter Finalize failed: " + hrToString(hr));
+                    releaseResources();
+                    return false;
                 }
             }
         }
@@ -168,17 +164,6 @@ bool SinkWriterPipeline::stop() {
 
 bool SinkWriterPipeline::createSinkWriter(IMFAttributes* attributes) {
     fixedOutputStreams_ = false;
-
-    if (config_.container == ContainerFormat::MP4 &&
-        config_.video.codec == VideoCodec::H264 &&
-        config_.video.realtimeEncode) {
-        // Ask the built-in MP4 sink writer for fragmented MP4 output. This is
-        // the closest Media Foundation equivalent to OBS-style recording while
-        // keeping the current no-FFmpeg/no-GPL architecture. Older runtimes may
-        // ignore it and still produce a normal MP4.
-        attributes->SetGUID(MF_TRANSCODE_CONTAINERTYPE, MFTranscodeContainerType_FMPEG4);
-        attributes->SetUINT64(PB_MF_MPEG4SINK_MIN_FRAGMENT_DURATION, 10000000ULL);
-    }
 
     PB_CHECK_HR(MFCreateSinkWriterFromURL(config_.outputPath.c_str(),
                                            nullptr,
@@ -196,20 +181,24 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
     try {
         int64_t relativeTs = frame.timestamp;
         if (relativeTs < 0) relativeTs = 0;
-        if (firstVideoTimestamp_.load() < 0) {
-            firstVideoTimestamp_.store(relativeTs);
-        }
-
-        lastVideoTimestamp_.store(relativeTs);
-
         // Duration of one frame in 100ns units
         int64_t frameDuration = 10000000LL / config_.video.fps;
 
-        if (writeVideoFrameSurface(frame, relativeTs, frameDuration)) {
+        int64_t sampleTs = relativeTs;
+        if (nextVideoTimestamp_ < 0) {
+            nextVideoTimestamp_ = sampleTs;
+            firstVideoTimestamp_.store(sampleTs);
+        } else if (sampleTs < nextVideoTimestamp_) {
+            sampleTs = nextVideoTimestamp_;
+        }
+        nextVideoTimestamp_ = sampleTs + frameDuration;
+        lastVideoTimestamp_.store(sampleTs);
+
+        if (writeVideoFrameSurface(frame, sampleTs, frameDuration)) {
             return true;
         }
 
-        return writeVideoFrameCpu(frame, relativeTs, frameDuration);
+        return writeVideoFrameCpu(frame, sampleTs, frameDuration);
 
     } catch (const std::exception& e) {
         reportError(std::string("writeVideoFrame: ") + e.what());
@@ -874,6 +863,7 @@ void SinkWriterPipeline::releaseResources() {
     gpuInputHeight_ = 0;
     initialized_ = false;
     fixedOutputStreams_ = false;
+    nextVideoTimestamp_ = -1;
 }
 
 } // namespace pb

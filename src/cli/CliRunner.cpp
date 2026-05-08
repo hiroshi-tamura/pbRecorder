@@ -18,6 +18,7 @@
 
 #include <windows.h>
 #include <atomic>
+#include <mutex>
 #include <optional>
 
 // ---------------------------------------------------------------------------
@@ -370,7 +371,16 @@ int CliRunner::run(const QStringList& args) {
         if (a == "--region") {
             QStringList parts = getArg(i).split(','); ++i;
             if (parts.size() != 4) { err() << "Error: --region requires X,Y,W,H" << Qt::endl; return 1; }
-            config.capture.region = { parts[0].toInt(), parts[1].toInt(), parts[2].toInt(), parts[3].toInt() };
+            bool okX = false, okY = false, okW = false, okH = false;
+            const int x = parts[0].toInt(&okX);
+            const int y = parts[1].toInt(&okY);
+            const int w = parts[2].toInt(&okW);
+            const int h = parts[3].toInt(&okH);
+            if (!okX || !okY || !okW || !okH || w <= 0 || h <= 0) {
+                err() << "Error: --region requires numeric X,Y,W,H with positive W/H" << Qt::endl;
+                return 1;
+            }
+            config.capture.region = { x, y, w, h };
             config.capture.mode = pb::CaptureMode::Region;
             explicitCaptureMode = pb::CaptureMode::Region;
             continue;
@@ -488,6 +498,60 @@ int CliRunner::run(const QStringList& args) {
 
     if (explicitCaptureMode) {
         config.capture.mode = *explicitCaptureMode;
+    }
+
+    if (config.video.fps < 1 || config.video.fps > 240) {
+        err() << "Error: --fps must be between 1 and 240" << Qt::endl;
+        return 1;
+    }
+    if (duration < 0) {
+        err() << "Error: --duration must be zero or positive" << Qt::endl;
+        return 1;
+    }
+    if (config.video.bitrate <= 0 || config.audio.bitrate <= 0 ||
+        config.audio.sampleRate <= 0 || config.audio.bitsPerSample <= 0) {
+        err() << "Error: bitrate, sample-rate, and bit-depth values must be positive numbers" << Qt::endl;
+        return 1;
+    }
+
+    auto videoCompatible = [](pb::ContainerFormat container, pb::VideoCodec video) {
+        if (container == pb::ContainerFormat::MKV || container == pb::ContainerFormat::MP4) {
+            return video == pb::VideoCodec::H264;
+        }
+        if (container == pb::ContainerFormat::WMV) {
+            return video == pb::VideoCodec::WMV;
+        }
+        return false;
+    };
+    auto compatible = [videoCompatible](pb::ContainerFormat container, pb::VideoCodec video, pb::AudioCodec audio) {
+        if (!videoCompatible(container, video)) {
+            return false;
+        }
+        if (container == pb::ContainerFormat::MKV) {
+            return audio == pb::AudioCodec::AAC || audio == pb::AudioCodec::Opus ||
+                   audio == pb::AudioCodec::Vorbis || audio == pb::AudioCodec::PCM;
+        }
+        if (container == pb::ContainerFormat::MP4) {
+            return audio == pb::AudioCodec::AAC || audio == pb::AudioCodec::MP3;
+        }
+        if (container == pb::ContainerFormat::WMV) {
+            return audio == pb::AudioCodec::WMA;
+        }
+        return false;
+    };
+    if (!videoCompatible(config.container, config.video.codec)) {
+        err() << "Error: unsupported container/video codec combination" << Qt::endl;
+        return 1;
+    }
+    if (!noAudio && config.recordAudio && !compatible(config.container, config.video.codec, config.audio.codec)) {
+        err() << "Error: unsupported container/video/audio codec combination" << Qt::endl;
+        return 1;
+    }
+    if (!noAudio && config.recordAudio &&
+        config.audio.codec == pb::AudioCodec::PCM &&
+        config.audio.bitsPerSample != 16) {
+        err() << "Error: PCM output currently supports only 16-bit samples" << Qt::endl;
+        return 1;
     }
 
     // -----------------------------------------------------------------------
@@ -624,8 +688,10 @@ int CliRunner::run(const QStringList& args) {
     pb::RecordingSession session;
     std::atomic<bool> errorOccurred{false};
     QString errorMsg;
+    std::mutex errorMutex;
 
     session.setErrorCallback([&](const std::string& error) {
+        std::lock_guard<std::mutex> lock(errorMutex);
         if (!errorMsg.isEmpty()) {
             errorMsg += "\n";
         }
@@ -636,6 +702,7 @@ int CliRunner::run(const QStringList& args) {
 
     if (!session.initialize(config)) {
         err() << "Error: failed to initialize recording session" << Qt::endl;
+        std::lock_guard<std::mutex> lock(errorMutex);
         if (!errorMsg.isEmpty()) {
             err() << "Detail: " << errorMsg << Qt::endl;
         }
@@ -644,6 +711,7 @@ int CliRunner::run(const QStringList& args) {
 
     if (!session.start()) {
         err() << "Error: failed to start recording" << Qt::endl;
+        std::lock_guard<std::mutex> lock(errorMutex);
         if (!errorMsg.isEmpty()) {
             err() << "Detail: " << errorMsg << Qt::endl;
         }
@@ -680,7 +748,7 @@ int CliRunner::run(const QStringList& args) {
     // Stop recording
     // -----------------------------------------------------------------------
     int64_t finalMs = session.getDurationMs();
-    session.stop();
+    bool stopOk = session.stop();
 
     // Get actual file size after stop (flushed to disk)
     int64_t finalSize = 0;
@@ -689,14 +757,25 @@ int CliRunner::run(const QStringList& args) {
     QString outFile = QString::fromStdWString(config.outputPath);
 
     out() << "\n"
-          << "Recording stopped. Duration: " << formatDuration(finalMs)
+          << (stopOk ? "Recording stopped. " : "Recording stopped with finalization errors. ")
+          << "Duration: " << formatDuration(finalMs)
           << ", Size: " << formatSize(finalSize) << Qt::endl;
     out() << "Output: " << outFile << Qt::endl;
     out().flush();
 
     SetConsoleCtrlHandler(consoleHandler, FALSE);
 
+    if (!stopOk) {
+        err() << "Error: recording finalization failed; output may be incomplete or not seekable." << Qt::endl;
+        std::lock_guard<std::mutex> lock(errorMutex);
+        if (!errorMsg.isEmpty()) {
+            err() << "Detail: " << errorMsg << Qt::endl;
+        }
+        return 3;
+    }
+
     if (errorOccurred.load()) {
+        std::lock_guard<std::mutex> lock(errorMutex);
         err() << "Error during recording: " << errorMsg << Qt::endl;
         return 3;
     }

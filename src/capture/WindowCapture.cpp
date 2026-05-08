@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <exception>
+#include <string>
 
 // Link: dwmapi.lib is needed at link time
 
@@ -177,7 +179,15 @@ bool WindowCapture::captureFrame() {
 
     std::lock_guard<std::mutex> lock(callbackMutex_);
     if (frameCallback_) {
-        frameCallback_(vf);
+        try {
+            frameCallback_(vf);
+        } catch (const std::exception& e) {
+            reportError(std::string("WindowCapture callback failed: ") + e.what());
+            capturing_.store(false);
+        } catch (...) {
+            reportError("WindowCapture callback failed with an unknown error");
+            capturing_.store(false);
+        }
     }
 
     return true;

@@ -59,6 +59,7 @@ private:
     uint32_t height_ = 0;
 
     std::atomic<bool> capturing_{false};
+    std::atomic<bool> trackingErrorReported_{false};
 
     mutable std::mutex callbackMutex_;
     FrameCallback frameCallback_;

@@ -68,6 +68,7 @@ private:
     std::atomic<int64_t> firstVideoTimestamp_{-1};
     std::atomic<int64_t> lastVideoTimestamp_{0};
     std::atomic<int64_t> firstAudioTimestamp_{-1};
+    int64_t nextVideoTimestamp_ = -1;
 
     // Staging texture for GPU→CPU copy
     ComPtr<ID3D11Texture2D> stagingTexture_;

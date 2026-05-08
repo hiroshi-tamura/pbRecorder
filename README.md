@@ -149,7 +149,7 @@ pbRecorder-cli --cli --no-audio -o out.mp4
 pbRecorder-cli --cli --container mkv --acodec opus --abitrate 128 -o out.mkv
 
 # MKV + PCM (96kHz/24bit)
-pbRecorder-cli --cli --container mkv --acodec pcm --sample-rate 96000 --bit-depth 24 -o out.mkv
+pbRecorder-cli --cli --container mkv --acodec pcm --sample-rate 96000 --bit-depth 16 -o out.mkv
 ```
 
 ### All CLI Options

@@ -108,6 +108,7 @@ bool UiElementCapture::start()
     if (capturing_.load()) return true;
     if (!innerCapture_) return false;
 
+    trackingErrorReported_.store(false);
     capturing_ = true;
     if (innerCapture_->start()) {
         return true;
@@ -258,6 +259,10 @@ void UiElementCapture::onFullFrame(const VideoFrame& frame)
             int nextMonitor = findBestMonitor(next);
             if (nextMonitor == monitorIndex_) {
                 lastRect_ = next;
+            } else if (!trackingErrorReported_.exchange(true)) {
+                reportError("UiElementCapture: selected UI element moved to another monitor. Stop and select the UI element again.");
+                capturing_ = false;
+                return;
             }
         }
     }
@@ -275,17 +280,29 @@ void UiElementCapture::onFullFrame(const VideoFrame& frame)
 
     int srcX = lastRect_.x - monitorX_;
     int srcY = lastRect_.y - monitorY_;
+    int dstX = 0;
+    int dstY = 0;
     int srcW = std::min<int>(lastRect_.width, static_cast<int>(width_));
     int srcH = std::min<int>(lastRect_.height, static_cast<int>(height_));
 
-    srcX = std::clamp(srcX, 0, static_cast<int>(frame.width));
-    srcY = std::clamp(srcY, 0, static_cast<int>(frame.height));
+    if (srcX < 0) {
+        dstX = -srcX;
+        srcW -= dstX;
+        srcX = 0;
+    }
+    if (srcY < 0) {
+        dstY = -srcY;
+        srcH -= dstY;
+        srcY = 0;
+    }
     if (srcX >= static_cast<int>(frame.width) || srcY >= static_cast<int>(frame.height)) {
         return;
     }
 
     srcW = std::min(srcW, static_cast<int>(frame.width) - srcX);
     srcH = std::min(srcH, static_cast<int>(frame.height) - srcY);
+    srcW = std::min(srcW, static_cast<int>(width_) - dstX);
+    srcH = std::min(srcH, static_cast<int>(height_) - dstY);
     if (srcW <= 0 || srcH <= 0) {
         return;
     }
@@ -300,7 +317,7 @@ void UiElementCapture::onFullFrame(const VideoFrame& frame)
 
     context_->CopySubresourceRegion(
         cropTexture_.Get(), 0,
-        0, 0, 0,
+        static_cast<UINT>(dstX), static_cast<UINT>(dstY), 0,
         frame.texture.Get(), 0,
         &srcBox);
 

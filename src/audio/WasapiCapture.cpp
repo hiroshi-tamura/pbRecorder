@@ -318,6 +318,7 @@ bool WasapiCapture::stop() {
 // captureThread
 // ============================================================================
 void WasapiCapture::captureThread() {
+    try {
     ScopedCom com;
 
     HANDLE waitHandles[2] = { eventHandle_, stopEvent_ };
@@ -373,6 +374,16 @@ void WasapiCapture::captureThread() {
                 capturing_ = false;
                 break;
             }
+            struct BufferReleaseGuard {
+                IAudioCaptureClient* client = nullptr;
+                UINT32 frames = 0;
+                bool active = false;
+                ~BufferReleaseGuard() {
+                    if (active && client) {
+                        client->ReleaseBuffer(frames);
+                    }
+                }
+            } releaseGuard{captureClient_, numFramesAvailable, true};
 
             if (numFramesAvailable > 0) {
                 // Calculate timestamp in 100ns units
@@ -420,14 +431,23 @@ void WasapiCapture::captureThread() {
                 } else {
                     // Determine source format
                     bool srcIsFloat = false;
+                    bool srcIsPcm = false;
                     int srcBps = mixFormat_->wBitsPerSample;
                     if (mixFormat_->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
                         WAVEFORMATEXTENSIBLE* ext = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(mixFormat_);
                         static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_LOCAL =
                             {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+                        static const GUID KSDATAFORMAT_SUBTYPE_PCM_LOCAL =
+                            {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
                         srcIsFloat = IsEqualGUID(ext->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_LOCAL);
+                        srcIsPcm = IsEqualGUID(ext->SubFormat, KSDATAFORMAT_SUBTYPE_PCM_LOCAL);
+                        if (ext->Samples.wValidBitsPerSample > 0) {
+                            srcBps = ext->Samples.wValidBitsPerSample;
+                        }
                     } else if (mixFormat_->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
                         srcIsFloat = true;
+                    } else if (mixFormat_->wFormatTag == WAVE_FORMAT_PCM) {
+                        srcIsPcm = true;
                     }
 
                     uint32_t totalSamples = numFramesAvailable * channelCount_;
@@ -449,6 +469,26 @@ void WasapiCapture::captureThread() {
                     } else if (!srcIsFloat && srcBps == 16 && outBps == 16) {
                         // Int16 pass-through
                         std::memcpy(buffer.data.data(), data, outSize);
+                    } else if (srcIsPcm && srcBps == 24 && outBps == 16 && mixFormat_->nBlockAlign >= channelCount_ * 3) {
+                        const uint8_t* src = reinterpret_cast<const uint8_t*>(data);
+                        int16_t* dst = reinterpret_cast<int16_t*>(buffer.data.data());
+                        const uint32_t srcBytesPerSample = mixFormat_->nBlockAlign / channelCount_;
+                        for (uint32_t i = 0; i < totalSamples; ++i) {
+                            const uint8_t* s = src + static_cast<size_t>(i) * srcBytesPerSample;
+                            int32_t v = static_cast<int32_t>(s[0]) |
+                                        (static_cast<int32_t>(s[1]) << 8) |
+                                        (static_cast<int32_t>(s[2]) << 16);
+                            if (v & 0x00800000) {
+                                v |= static_cast<int32_t>(0xFF000000);
+                            }
+                            dst[i] = static_cast<int16_t>(v >> 8);
+                        }
+                    } else if (srcIsPcm && srcBps == 32 && outBps == 16 && mixFormat_->nBlockAlign >= channelCount_ * 4) {
+                        const int32_t* src = reinterpret_cast<const int32_t*>(data);
+                        int16_t* dst = reinterpret_cast<int16_t*>(buffer.data.data());
+                        for (uint32_t i = 0; i < totalSamples; ++i) {
+                            dst[i] = static_cast<int16_t>(src[i] >> 16);
+                        }
                     } else if (!srcIsFloat && srcBps == 16 && outBps == 32) {
                         // Int16 -> Float32
                         const int16_t* src = reinterpret_cast<const int16_t*>(data);
@@ -473,10 +513,19 @@ void WasapiCapture::captureThread() {
                     cb = audioCallback_;
                 }
                 if (cb) {
-                    cb(buffer);
+                    try {
+                        cb(buffer);
+                    } catch (const std::exception& e) {
+                        reportError(std::string("Audio callback failed: ") + e.what());
+                        capturing_ = false;
+                    } catch (...) {
+                        reportError("Audio callback failed with an unknown error");
+                        capturing_ = false;
+                    }
                 }
             }
 
+            releaseGuard.active = false;
             captureClient_->ReleaseBuffer(numFramesAvailable);
 
             hr = captureClient_->GetNextPacketSize(&packetLength);
@@ -488,6 +537,13 @@ void WasapiCapture::captureThread() {
                 break;
             }
         }
+    }
+    } catch (const std::exception& e) {
+        reportError(std::string("WASAPI capture thread failed: ") + e.what());
+        capturing_ = false;
+    } catch (...) {
+        reportError("WASAPI capture thread failed with an unknown error");
+        capturing_ = false;
     }
 }
 
