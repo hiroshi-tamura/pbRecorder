@@ -14,6 +14,13 @@
 
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QStandardItemModel>
+#include <QLayout>
+#include <QVBoxLayout>
+#include <QLabel>
+#include <QAbstractButton>
+#include <QList>
+#include <QSize>
 #include <QCloseEvent>
 #include <QShowEvent>
 #include <QStandardPaths>
@@ -414,6 +421,13 @@ MainWindow::MainWindow(QWidget *parent)
     ui->audioBitDepthCombo->setToolTip(
         QStringLiteral("PCM output is currently written as 16-bit integer samples."));
 
+    // Bound column widths so the (wide) peak-meter preferred size doesn't blow
+    // up the window width when it is measured for the fixed size.
+    ui->sourceGroupBox->setMaximumWidth(360);
+    ui->videoGroupBox->setMaximumWidth(360);
+    ui->audioGroupBox->setMaximumWidth(430);
+    ui->outputGroupBox->setMaximumWidth(430);
+
     setupConnections();
 
     // Initial population
@@ -467,6 +481,19 @@ MainWindow::MainWindow(QWidget *parent)
     // Initialize record button guard for current capture mode
     updateRecordButtonGuard();
 
+    // Capture preview is inline at the bottom, hidden by default. The
+    // "プレビュー" checkbox toggles it; the window only grows while it is shown.
+    ui->showPreviewCheck->setChecked(false);
+    ui->capturePreviewLabel->setVisible(false);
+    ui->capturePreviewTitleLabel->setVisible(false);
+    connect(ui->showPreviewCheck, &QAbstractButton::toggled, this, [this](bool on) {
+        ui->capturePreviewLabel->setVisible(on);
+        refitWindow(); // grow/shrink the window to fit the preview
+    });
+
+    // The window is made non-resizable and snug in showEvent() once styles are
+    // applied (see lockWindowSize()).
+
     // Auto-test mode: --auto-test records for 5 seconds then exits
     if (QCoreApplication::arguments().contains("--auto-test")) {
         QTimer::singleShot(1000, this, [this]() {
@@ -495,6 +522,9 @@ void MainWindow::showEvent(QShowEvent *event)
     QMainWindow::showEvent(event);
     // Register the global hotkey on first show (winId() must be valid).
     registerGlobalHotkey();
+    // Lock the window to a fixed size on first show (styles are applied by now,
+    // so size hints are accurate).
+    lockWindowSize();
 }
 
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
@@ -560,33 +590,9 @@ void MainWindow::setupConnections()
     connect(ui->audioBitrateSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &MainWindow::onAudioBitrateSpinBoxChanged);
 
-    // ASIO channel visibility — separate for output and input
-    auto updateAsioOutVisibility = [this]() {
-        bool isAsio = false;
-        int outIdx = ui->outputAudioCombo->currentIndex();
-        if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
-            auto t = outputAudioDevices_[outIdx - 1].type;
-            if (t == pb::AudioDeviceType::ASIO || t == pb::AudioDeviceType::ASIO_Output)
-                isAsio = true;
-        }
-        ui->asioOutChannelLabel->setVisible(isAsio);
-        ui->asioOutStartChSpin->setVisible(isAsio);
-        ui->asioOutEndChSpin->setVisible(isAsio);
-    };
-    auto updateAsioInVisibility = [this]() {
-        bool isAsio = false;
-        int inIdx = ui->inputAudioCombo->currentIndex();
-        if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
-            auto t = inputAudioDevices_[inIdx - 1].type;
-            if (t == pb::AudioDeviceType::ASIO || t == pb::AudioDeviceType::ASIO_Output)
-                isAsio = true;
-        }
-        ui->asioChannelLabel->setVisible(isAsio);
-        ui->asioStartChSpin->setVisible(isAsio);
-        ui->asioEndChSpin->setVisible(isAsio);
-    };
+    // ASIO channel visibility — shown only when an ASIO device is selected.
     connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, updateAsioOutVisibility);
+            this, &MainWindow::updateAsioChannelVisibility);
     connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this]() { enforceSingleAudioSource(ui->outputAudioCombo); });
     connect(ui->outputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -596,7 +602,7 @@ void MainWindow::setupConnections()
     connect(ui->asioOutEndChSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &MainWindow::validateAudioCodec);
     connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, updateAsioInVisibility);
+            this, &MainWindow::updateAsioChannelVisibility);
     connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this]() { enforceSingleAudioSource(ui->inputAudioCombo); });
     connect(ui->inputAudioCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -737,7 +743,98 @@ void MainWindow::updateCaptureWidgetVisibility(int mode)
     ui->selectUiElementBtn->setVisible(showUiElement);
     ui->uiElementWindowCaptureCheck->setVisible(showUiElement);
 
+    updateProcessLoopbackItemState();
     updateRecordButtonGuard();
+    refitWindow();
+}
+
+void MainWindow::updateProcessLoopbackItemState()
+{
+    if (processLoopbackComboIndex_ < 0) return;
+
+    // Per-application loopback needs a target window, so it is only selectable
+    // in Window capture mode (index 1).
+    const bool windowMode = (ui->captureModeCombo->currentIndex() == 1);
+
+    if (auto* model = qobject_cast<QStandardItemModel*>(ui->outputAudioCombo->model())) {
+        if (auto* item = model->item(processLoopbackComboIndex_)) {
+            item->setEnabled(windowMode);
+            const bool ja = (currentLang_ == "ja");
+            item->setToolTip(windowMode
+                ? (ja ? "対象ウィンドウのアプリ（と子プロセス）の音声だけを録音します"
+                      : "Record only the captured window's app (and child processes) audio")
+                : (ja ? "ウィンドウモードのときに選択できます"
+                      : "Available in Window capture mode"));
+        }
+    }
+
+    // If it was selected but is no longer valid, fall back to "None".
+    if (!windowMode && ui->outputAudioCombo->currentIndex() == processLoopbackComboIndex_) {
+        ui->outputAudioCombo->setCurrentIndex(0);
+    }
+}
+
+void MainWindow::updateAsioChannelVisibility()
+{
+    bool outAsio = false;
+    int outIdx = ui->outputAudioCombo->currentIndex();
+    if (outIdx > 0 && (outIdx - 1) < static_cast<int>(outputAudioDevices_.size())) {
+        auto t = outputAudioDevices_[outIdx - 1].type;
+        outAsio = (t == pb::AudioDeviceType::ASIO || t == pb::AudioDeviceType::ASIO_Output);
+    }
+    ui->asioOutChannelLabel->setVisible(outAsio);
+    ui->asioOutStartChSpin->setVisible(outAsio);
+    ui->asioOutEndChSpin->setVisible(outAsio);
+
+    bool inAsio = false;
+    int inIdx = ui->inputAudioCombo->currentIndex();
+    if (inIdx > 0 && (inIdx - 1) < static_cast<int>(inputAudioDevices_.size())) {
+        auto t = inputAudioDevices_[inIdx - 1].type;
+        inAsio = (t == pb::AudioDeviceType::ASIO || t == pb::AudioDeviceType::ASIO_Output);
+    }
+    ui->asioChannelLabel->setVisible(inAsio);
+    ui->asioStartChSpin->setVisible(inAsio);
+    ui->asioEndChSpin->setVisible(inAsio);
+
+    refitWindow();
+}
+
+// Makes the window non-resizable and snug to its content (zero wasted space).
+// The Source group is given a constant height equal to its tallest capture mode
+// so switching modes does NOT change the window size. The window grows only
+// when the chosen audio codec/device adds rows, or the preview is shown.
+void MainWindow::lockWindowSize()
+{
+    if (sizeLocked_) return;
+    sizeLocked_ = true;
+
+    // Fix the Source group's height to its tallest capture mode.
+    const int realMode = ui->captureModeCombo->currentIndex();
+    int srcMax = 0;
+    for (int m = 0; m < 4; ++m) {
+        updateCaptureWidgetVisibility(m);
+        if (auto* l = ui->sourceGroupBox->layout()) l->activate();
+        srcMax = std::max(srcMax, ui->sourceGroupBox->sizeHint().height());
+    }
+    updateCaptureWidgetVisibility(realMode);
+    ui->sourceGroupBox->setFixedHeight(srcMax);
+
+    // Enable dynamic refitting and snap to current content. setFixedSize() on
+    // the window removes the resize border (truly non-resizable), unlike the
+    // layout SetFixedSize constraint.
+    refitEnabled_ = true;
+    refitWindow();
+}
+
+// Resizes the window to exactly fit its current content and makes it
+// non-resizable. Called after any change that adds/removes rows.
+void MainWindow::refitWindow()
+{
+    if (!refitEnabled_) return;
+    if (auto* l = layout()) l->activate();
+    // setFixedSize() pins min == max, so Qt clamps WM_GETMINMAXINFO and the
+    // window cannot be resized; the size still follows content via sizeHint().
+    setFixedSize(sizeHint());
 }
 
 void MainWindow::updateRecordButtonGuard()
@@ -807,6 +904,10 @@ void MainWindow::updateCapturePreview()
     if (!ui || !ui->capturePreviewLabel) {
         return;
     }
+    // Skip preview work entirely while the inline preview is hidden.
+    if (!ui->capturePreviewLabel->isVisible()) {
+        return;
+    }
 
     const bool ja = (currentLang_ == "ja");
     auto rect = currentCapturePreviewRect();
@@ -837,7 +938,7 @@ void MainWindow::updateCapturePreview()
     QPixmap pixmap = QPixmap::fromImage(image);
     QSize targetSize = ui->capturePreviewLabel->contentsRect().size();
     if (targetSize.width() <= 0 || targetSize.height() <= 0) {
-        targetSize = QSize(320, 120);
+        targetSize = QSize(480, 270);
     }
     ui->capturePreviewLabel->setText(QString());
     ui->capturePreviewLabel->setPixmap(
@@ -877,6 +978,7 @@ void MainWindow::onVideoCodecChanged(int index)
     ui->h264ProfileLabel->setVisible(isH264);
     ui->h264LevelLabel->setVisible(isH264);
     updateContainerCombo();
+    refitWindow();
 }
 
 void MainWindow::updateContainerCombo()
@@ -1206,6 +1308,8 @@ void MainWindow::updateAudioCodecWidgets()
 
     ui->vorbisQualityLabel->setVisible(showVorbisQuality);
     ui->vorbisQualitySlider->setVisible(showVorbisQuality);
+
+    refitWindow();
 }
 
 // ============================================================================
@@ -1286,18 +1390,37 @@ void MainWindow::populateAudioDevices()
     const bool ja = (currentLang_ == "ja");
     const QString noneItem = ja ? QStringLiteral("なし") : QStringLiteral("None");
 
-    // Output devices (system audio / speakers / ASIO output)
+    // Per-application loopback entry (records only the captured window's app audio).
+    // Appended last so it has a stable position after the real render devices.
+    {
+        pb::AudioDeviceInfo proc;
+        proc.type = pb::AudioDeviceType::ProcessLoopback;
+        proc.id = L"process-loopback";
+        proc.name = (ja ? L"▶ 対象ウィンドウのアプリ音声のみ"
+                        : L"▶ Captured window's app audio only");
+        proc.channelCount = 2;
+        proc.sampleRate = 48000;
+        proc.bitsPerSample = 16;
+        outputAudioDevices_.push_back(proc);
+    }
+
+    // Output devices (system audio / speakers / ASIO output / process loopback)
     ui->outputAudioCombo->addItem(noneItem);
+    processLoopbackComboIndex_ = -1;
     for (const auto& dev : outputAudioDevices_) {
         QString prefix;
         if (dev.type == pb::AudioDeviceType::ASIO_Output) prefix = "[ASIO] ";
         ui->outputAudioCombo->addItem(prefix + QString::fromStdWString(dev.name),
                                       QString::fromStdWString(dev.id));
+        if (dev.type == pb::AudioDeviceType::ProcessLoopback) {
+            processLoopbackComboIndex_ = ui->outputAudioCombo->count() - 1;
+        }
     }
-    // Default: select first device if available
-    if (!outputAudioDevices_.empty()) {
+    // Default: select first real device if available (index 1)
+    if (outputAudioDevices_.size() > 1) {
         ui->outputAudioCombo->setCurrentIndex(1);
     }
+    updateProcessLoopbackItemState();
 
     // Input devices (microphones + ASIO)
     ui->inputAudioCombo->addItem(noneItem);
@@ -2104,8 +2227,8 @@ void MainWindow::saveSettings()
 {
     QJsonObject root = loadJson();
 
-    // Window geometry (base64 encoded)
-    root["windowGeometry"] = QString::fromLatin1(saveGeometry().toBase64());
+    // Window is fixed-size; geometry is no longer persisted.
+    root.remove("windowGeometry");
 
     QJsonObject s;
     s["captureMode"] = ui->captureModeCombo->currentIndex();
@@ -2182,11 +2305,8 @@ void MainWindow::loadSettings()
 {
     QJsonObject root = loadJson();
 
-    // Restore window geometry
-    if (root.contains("windowGeometry")) {
-        QByteArray geo = QByteArray::fromBase64(root["windowGeometry"].toString().toLatin1());
-        restoreGeometry(geo);
-    }
+    // Window is fixed-size (content-snug); geometry is intentionally NOT restored
+    // so the window always opens compact regardless of older saved sizes.
 
     QJsonObject s = root["lastSession"].toObject();
     if (s.isEmpty()) return;
@@ -2435,7 +2555,7 @@ void MainWindow::retranslateUi()
     ui->uiElementWindowCaptureCheck->setToolTip(ja
         ? "別ウィンドウの重なりを避けるため、親ウィンドウを直接キャプチャしてからUI領域を切り出します"
         : "Capture the parent window first, then crop the UI region to avoid overlapping windows");
-    ui->capturePreviewTitleLabel->setText(ja ? "プレビュー:" : "Preview:");
+    ui->showPreviewCheck->setText(ja ? "プレビュー" : "Preview");
     if (!ui->capturePreviewLabel->pixmap()) {
         ui->capturePreviewLabel->setText(ja ? "録画対象プレビュー" : "Capture target preview");
     }
@@ -2484,6 +2604,13 @@ void MainWindow::retranslateUi()
     ui->outputAudioLabel->setText(ja ? "出力デバイス:" : "Output device:");
     ui->inputAudioLabel->setText(ja ? "入力デバイス:" : "Input device:");
     ui->outputAudioCombo->setItemText(0, ja ? "なし" : "None");
+    if (processLoopbackComboIndex_ >= 0 &&
+        processLoopbackComboIndex_ < ui->outputAudioCombo->count()) {
+        ui->outputAudioCombo->setItemText(processLoopbackComboIndex_,
+            ja ? QStringLiteral("▶ 対象ウィンドウのアプリ音声のみ")
+               : QStringLiteral("▶ Captured window's app audio only"));
+        updateProcessLoopbackItemState();
+    }
     ui->inputAudioCombo->setItemText(0, ja ? "なし" : "None");
     ui->asioOutChannelLabel->setText(ja ? "出力ASIOチャンネル:" : "Output ASIO ch:");
     ui->asioChannelLabel->setText(ja ? "入力ASIOチャンネル:" : "Input ASIO ch:");

@@ -22,3 +22,8 @@ pbRecorder-*.zip
 
 # Optional local SDKs. Do not commit proprietary vendor SDK payloads.
 third_party/asiosdk/
+# pbhandover
+/HANDOVER.md
+.pbhandover/
+.claude/settings.local.json
+.codex/hooks.json

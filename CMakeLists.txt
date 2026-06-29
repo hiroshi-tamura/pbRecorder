@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.5.6 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.5.7 LANGUAGES C CXX)
 
 include(CTest)
 option(PBRECORDER_BUILD_TESTING "Build pbRecorder tests" ON)
@@ -40,6 +40,7 @@ set(WIN_LIBS
     dwmapi
     shcore
     propsys
+    mmdevapi
 )
 
 # Third-party: libmatroska, libopus, libvorbis
@@ -165,6 +166,7 @@ set(CAPTURE_SOURCES
 
 set(AUDIO_SOURCES
     src/audio/WasapiCapture.cpp
+    src/audio/ProcessLoopbackCapture.cpp
     src/audio/AsioCapture.cpp
 )
 

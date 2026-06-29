@@ -5,6 +5,7 @@
 #include "capture/RegionCapture.h"
 #include "capture/UiElementCapture.h"
 #include "audio/WasapiCapture.h"
+#include "audio/ProcessLoopbackCapture.h"
 #include "audio/AsioCapture.h"
 #include "pipeline/SinkWriterPipeline.h"
 #include "pipeline/MkvPipeline.h"
@@ -137,6 +138,24 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
             // Cannot use two ASIO instances simultaneously — prioritize output
             onError("ASIO出力と入力を同時に使用できません。出力のみ使用します。");
             config_.useInputAudio = false;
+        }
+
+        // For per-application loopback, resolve the target process id from the
+        // captured window so we record only that app's audio.
+        if (config_.useOutputAudio &&
+            config_.outputAudioDevice.type == AudioDeviceType::ProcessLoopback) {
+            DWORD pid = 0;
+            if (config_.capture.targetWindow &&
+                IsWindow(config_.capture.targetWindow)) {
+                GetWindowThreadProcessId(config_.capture.targetWindow, &pid);
+            }
+            if (pid == 0) {
+                onError("アプリ音声録音にはウィンドウモードで対象ウィンドウの選択が必要です");
+                config_.useOutputAudio = false;
+            } else {
+                config_.outputAudioDevice.processId = static_cast<uint32_t>(pid);
+                config_.outputAudioDevice.id = L"process-loopback"; // non-empty sentinel
+            }
         }
 
         // Output audio (system/loopback)
@@ -629,6 +648,8 @@ std::unique_ptr<IAudioSource> RecordingSession::createAudioSource(AudioDeviceTyp
         case AudioDeviceType::WASAPI_Render:
         case AudioDeviceType::WASAPI_Capture:
             return std::make_unique<WasapiCapture>();
+        case AudioDeviceType::ProcessLoopback:
+            return std::make_unique<ProcessLoopbackCapture>();
 #ifdef ASIO_AVAILABLE
         case AudioDeviceType::ASIO:
         case AudioDeviceType::ASIO_Output:

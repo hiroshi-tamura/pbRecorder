@@ -14,6 +14,8 @@
 
 class PeakMeterWidget;
 class QPushButton;
+class QLabel;
+class QWidget;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -82,6 +84,10 @@ private:
     QString formatUiElementInfo(const pb::UiElementTarget& target) const;
     void updateCaptureWidgetVisibility(int mode);
     void updateRecordButtonGuard();
+    void updateProcessLoopbackItemState();
+    void updateAsioChannelVisibility();
+    void lockWindowSize();
+    void refitWindow();
     void registerGlobalHotkey();
     void unregisterGlobalHotkey();
     void updateOutputExtension();
@@ -113,6 +119,10 @@ private:
     QString currentLang_ = "en";
     QString autoNameFormat_ = "yyyy-MM-dd_HH-mm-ss";
 
+    // Window is made non-resizable/snug once on first show.
+    bool sizeLocked_ = false;
+    bool refitEnabled_ = false;
+
     // Last saved file path (for "Open Folder" button)
     QString lastSavedPath_;
     QPushButton* openFolderBtn_ = nullptr;
@@ -135,8 +145,9 @@ private:
     std::vector<pb::MonitorInfo> monitors_;
     std::vector<pb::WindowInfo> windows_;
     std::vector<pb::AudioDeviceInfo> audioDevices_;
-    std::vector<pb::AudioDeviceInfo> outputAudioDevices_; // render (speakers)
+    std::vector<pb::AudioDeviceInfo> outputAudioDevices_; // render (speakers) + process loopback
     std::vector<pb::AudioDeviceInfo> inputAudioDevices_;  // capture (mics) + ASIO
+    int processLoopbackComboIndex_ = -1; // output combo index of the per-app loopback entry
 
     // Region selection
     pb::RegionRect selectedRegion_{};

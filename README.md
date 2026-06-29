@@ -8,11 +8,17 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 [日本語版 README](README_ja.md)
 
+## What's New in 0.5.7
+
+- **Per-application audio recording** — In Window mode you can now record only the audio of the captured window's application (and its child processes) via the Windows process-loopback API. Select **"▶ Captured window's app audio only"** in the output device list (enabled only in Window mode).
+- **Accurate window capture** — Fixed a slight offset when recording in Window mode. The captured content is now cropped to the window's visible (DWM) bounds, so it is no longer shifted by the invisible resize border. Window mode uses `PrintWindow`, so other windows overlapping the target are never captured.
+- **Compact, fixed-size UI** — The main window was redesigned into a dense two-column dashboard (Source + Video / Audio + Output). It is non-resizable and snaps to its content (no wasted space); height grows only when a chosen codec adds rows (e.g. PCM) or the preview is shown. The capture preview is hidden by default and toggled with the **Preview** checkbox.
+
 ## Features
 
 ### Capture Modes
 - **Full Screen** — Record entire display (multi-monitor support)
-- **Window** — Record a specific window
+- **Window** — Record a specific window (via `PrintWindow`, so overlapping windows are never captured; cropped accurately to the window's visible bounds)
 - **Region** — Record an arbitrary rectangular area
   - **Auto-adjust** — Automatically snaps to nearby window edges
   - Edges can be fine-tuned by dragging after selection
@@ -32,6 +38,7 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 ### Audio
 - **WASAPI**: System audio (loopback) or microphone input
+- **Per-application loopback**: Record only the captured window's app audio (Window mode; uses the Windows process-loopback API, Windows 10 build 20348+ / Windows 11)
 - **ASIO**: Optional low-latency ASIO device support (requires a separately obtained ASIO SDK)
 - **Codecs**: AAC, MP3, Opus, Vorbis, PCM, WMA
 
@@ -54,7 +61,7 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 ## Installation
 
-1. Download ZIP from [Releases](https://github.com/hiroshi-tamura/pbRecorder/releases)
+1. Download ZIP from [Releases](https://github.com/pbtechlab/pbRecorder/releases)
 2. Extract to any folder
 3. Run `pbRecorder.exe` (GUI) or `pbRecorder-cli.exe` (CLI)
 

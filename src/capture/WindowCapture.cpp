@@ -38,26 +38,30 @@ bool WindowCapture::initialize(const CaptureConfig& config, ID3D11Device* device
     device_ = device;
     device_->GetImmediateContext(&context_);
 
-    // Get the actual window dimensions via DWM extended frame bounds (DPI-aware)
-    RECT rect;
-    if (!getWindowRect(rect)) {
+    // Determine the full window rect (PrintWindow's coordinate space) and the
+    // visible content sub-rectangle. The DIB is allocated at the full window
+    // size; PrintWindow draws into it, and we crop the visible region.
+    RECT fullRect;
+    int cropW = 0, cropH = 0, offX = 0, offY = 0;
+    if (!getCaptureGeometry(fullRect, cropW, cropH, offX, offY)) {
         reportError("WindowCapture::initialize: could not get window rect");
         return false;
     }
 
-    width_ = static_cast<uint32_t>(rect.right - rect.left);
-    height_ = static_cast<uint32_t>(rect.bottom - rect.top);
-
-    if (width_ == 0 || height_ == 0) {
+    if (cropW <= 0 || cropH <= 0) {
         reportError("WindowCapture::initialize: window has zero dimensions");
         return false;
     }
 
     // H.264 encoders require even dimensions
-    width_ &= ~1u;
-    height_ &= ~1u;
+    width_ = static_cast<uint32_t>(cropW & ~1);
+    height_ = static_cast<uint32_t>(cropH & ~1);
+    cropOffsetX_ = offX;
+    cropOffsetY_ = offY;
 
-    if (!createGdiResources(static_cast<int>(width_), static_cast<int>(height_))) {
+    int fullW = static_cast<int>(fullRect.right - fullRect.left);
+    int fullH = static_cast<int>(fullRect.bottom - fullRect.top);
+    if (!createGdiResources(fullW, fullH)) {
         return false;
     }
 
@@ -131,28 +135,40 @@ void WindowCapture::captureLoop() {
 }
 
 bool WindowCapture::captureFrame() {
-    // Get current window rect (may have been resized)
-    RECT rect;
-    if (!getWindowRect(rect)) return false;
+    // Get current geometry (window may have been resized/moved)
+    RECT fullRect;
+    int cropW = 0, cropH = 0, offX = 0, offY = 0;
+    if (!getCaptureGeometry(fullRect, cropW, cropH, offX, offY)) return false;
 
-    int w = rect.right - rect.left;
-    int h = rect.bottom - rect.top;
-    if (w <= 0 || h <= 0) return false;
+    int fullW = fullRect.right - fullRect.left;
+    int fullH = fullRect.bottom - fullRect.top;
+    if (fullW <= 0 || fullH <= 0) return false;
 
-    // H.264 encoders require even dimensions
-    w &= ~1;
-    h &= ~1;
-    if (w <= 0 || h <= 0) return false;
+    // Visible output dimensions, even for H.264
+    int outW = cropW & ~1;
+    int outH = cropH & ~1;
+    if (outW <= 0 || outH <= 0) return false;
 
-    // Handle window resize
-    if (w != bitmapWidth_ || h != bitmapHeight_) {
+    // Clamp crop window to the DIB bounds
+    if (offX < 0) offX = 0;
+    if (offY < 0) offY = 0;
+    if (offX + outW > fullW) outW = (fullW - offX) & ~1;
+    if (offY + outH > fullH) outH = (fullH - offY) & ~1;
+    if (outW <= 0 || outH <= 0) return false;
+
+    // Handle window resize (reallocate the full-window-sized DIB)
+    if (fullW != bitmapWidth_ || fullH != bitmapHeight_) {
         releaseGdiResources();
-        if (!createGdiResources(w, h)) return false;
-        width_ = static_cast<uint32_t>(w);
-        height_ = static_cast<uint32_t>(h);
+        if (!createGdiResources(fullW, fullH)) return false;
     }
+    width_ = static_cast<uint32_t>(outW);
+    height_ = static_cast<uint32_t>(outH);
+    cropOffsetX_ = offX;
+    cropOffsetY_ = offY;
 
-    // Use PrintWindow with PW_RENDERFULLCONTENT for DWM-compatible capture
+    // Use PrintWindow with PW_RENDERFULLCONTENT for DWM-compatible capture.
+    // PrintWindow renders the target window's own content directly, so any
+    // other window overlapping it on screen is NOT captured.
     // PW_RENDERFULLCONTENT = 0x00000002
     static constexpr UINT PW_RENDERFULLCONTENT_FLAG = 0x00000002;
 
@@ -162,20 +178,20 @@ bool WindowCapture::captureFrame() {
         return false;
     }
 
-    // Composite cursor if needed
+    // Composite cursor if needed (relative to the full window rect)
     if (config_.captureCursor) {
-        compositeCursor(memDC_, rect);
+        compositeCursor(memDC_, fullRect);
     }
 
-    // Convert bitmap to D3D11 texture
-    ComPtr<ID3D11Texture2D> texture = bitmapToTexture(w, h);
+    // Convert bitmap to D3D11 texture, cropping out the invisible border offset
+    ComPtr<ID3D11Texture2D> texture = bitmapToTexture(offX, offY, outW, outH);
     if (!texture) return false;
 
     VideoFrame vf;
     vf.texture = texture;
     vf.timestamp = queryTimestamp();
-    vf.width = static_cast<uint32_t>(w);
-    vf.height = static_cast<uint32_t>(h);
+    vf.width = static_cast<uint32_t>(outW);
+    vf.height = static_cast<uint32_t>(outH);
 
     std::lock_guard<std::mutex> lock(callbackMutex_);
     if (frameCallback_) {
@@ -255,7 +271,8 @@ void WindowCapture::releaseGdiResources() {
     bitmapHeight_ = 0;
 }
 
-ComPtr<ID3D11Texture2D> WindowCapture::bitmapToTexture(int width, int height) {
+ComPtr<ID3D11Texture2D> WindowCapture::bitmapToTexture(int offsetX, int offsetY,
+                                                        int cropW, int cropH) {
     if (!dibBits_) {
         reportError("WindowCapture: DIB section bits pointer is null");
         return nullptr;
@@ -265,17 +282,22 @@ ComPtr<ID3D11Texture2D> WindowCapture::bitmapToTexture(int width, int height) {
     GdiFlush();
 
     // DIB section data is directly accessible via dibBits_.
-    // GDI gives us BGRX (alpha=0). Set alpha to 255 for D3D11 compatibility.
-    const size_t pixelCount = static_cast<size_t>(width) * height;
+    // GDI gives us BGRX (alpha=0). Set alpha to 255 over the whole DIB.
+    const size_t fullPixelCount =
+        static_cast<size_t>(bitmapWidth_) * static_cast<size_t>(bitmapHeight_);
     uint8_t* data = static_cast<uint8_t*>(dibBits_);
-    for (size_t i = 0; i < pixelCount; ++i) {
+    for (size_t i = 0; i < fullPixelCount; ++i) {
         data[i * 4 + 3] = 255; // set alpha
     }
 
-    // Create D3D11 texture directly from DIB bits
+    const size_t fullPitch = static_cast<size_t>(bitmapWidth_) * 4;
+
+    // Create D3D11 texture from the cropped sub-region of the DIB. We keep the
+    // full DIB pitch and point the source at the cropped top-left so the
+    // invisible border offset is removed without copying.
     D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = static_cast<UINT>(width);
-    desc.Height = static_cast<UINT>(height);
+    desc.Width = static_cast<UINT>(cropW);
+    desc.Height = static_cast<UINT>(cropH);
     desc.MipLevels = 1;
     desc.ArraySize = 1;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -284,8 +306,9 @@ ComPtr<ID3D11Texture2D> WindowCapture::bitmapToTexture(int width, int height) {
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
     D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem = dibBits_;
-    initData.SysMemPitch = static_cast<UINT>(width * 4);
+    initData.pSysMem = data + static_cast<size_t>(offsetY) * fullPitch +
+                       static_cast<size_t>(offsetX) * 4;
+    initData.SysMemPitch = static_cast<UINT>(fullPitch);
 
     ComPtr<ID3D11Texture2D> texture;
     HRESULT hr = device_->CreateTexture2D(&desc, &initData, &texture);
@@ -358,6 +381,36 @@ bool WindowCapture::getWindowRect(RECT& rect) const {
 
     // Fallback to regular GetWindowRect
     return GetWindowRect(config_.targetWindow, &rect) != FALSE;
+}
+
+bool WindowCapture::getCaptureGeometry(RECT& fullRect, int& cropW, int& cropH,
+                                       int& offsetX, int& offsetY) const {
+    // GetWindowRect gives the coordinate space PrintWindow draws into
+    // (origin = full window top-left, including invisible resize borders).
+    if (!GetWindowRect(config_.targetWindow, &fullRect)) {
+        return false;
+    }
+
+    // DWM extended frame bounds is the visible window rect (excludes the
+    // invisible borders). The difference is the offset to crop away.
+    RECT dwmRect;
+    HRESULT hr = DwmGetWindowAttribute(config_.targetWindow,
+                                       DWMWA_EXTENDED_FRAME_BOUNDS,
+                                       &dwmRect, sizeof(dwmRect));
+    if (SUCCEEDED(hr)) {
+        offsetX = static_cast<int>(dwmRect.left - fullRect.left);
+        offsetY = static_cast<int>(dwmRect.top - fullRect.top);
+        if (offsetX < 0) offsetX = 0;
+        if (offsetY < 0) offsetY = 0;
+        cropW = static_cast<int>(dwmRect.right - dwmRect.left);
+        cropH = static_cast<int>(dwmRect.bottom - dwmRect.top);
+    } else {
+        offsetX = 0;
+        offsetY = 0;
+        cropW = static_cast<int>(fullRect.right - fullRect.left);
+        cropH = static_cast<int>(fullRect.bottom - fullRect.top);
+    }
+    return true;
 }
 
 int64_t WindowCapture::queryTimestamp() const {

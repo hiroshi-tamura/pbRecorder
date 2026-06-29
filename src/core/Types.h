@@ -55,7 +55,8 @@ enum class AudioDeviceType {
     WASAPI_Render,    // System audio (loopback)
     WASAPI_Capture,   // Microphone
     ASIO,             // ASIO input (recording from interface inputs)
-    ASIO_Output       // ASIO output (recording what the interface is playing back)
+    ASIO_Output,      // ASIO output (recording what the interface is playing back)
+    ProcessLoopback   // Per-application loopback (audio of a specific window's process)
 };
 
 struct MonitorInfo {
@@ -87,6 +88,8 @@ struct AudioDeviceInfo {
     // ASIO channel range (0-based)
     int asioStartChannel = 0;
     int asioEndChannel = -1; // -1 = use all channels
+    // For ProcessLoopback: target process id (resolved from the captured window).
+    uint32_t processId = 0;
 };
 
 struct RegionRect {
