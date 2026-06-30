@@ -8,6 +8,10 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 [日本語版 README](README_ja.md)
 
+## What's New in 0.5.8
+
+- **No more audio/video drift on long recordings** — Video is now anchored to its real capture clock (the same high-resolution QPC clock the audio uses), instead of advancing by a synthetic per-frame duration. Previously the video timestamp could ratchet ahead of real time and never recover, so audio and video drifted further apart the longer you recorded. Now both streams share a single clock, so they stay in sync for the full length of the recording. Applies to all containers (MP4, WMV, MKV).
+
 ## What's New in 0.5.7
 
 - **Per-application audio recording** — In Window mode you can now record only the audio of the captured window's application (and its child processes) via the Windows process-loopback API. Select **"▶ Captured window's app audio only"** in the output device list (enabled only in Window mode).

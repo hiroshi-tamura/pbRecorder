@@ -184,14 +184,18 @@ bool SinkWriterPipeline::writeVideoFrame(const VideoFrame& frame) {
         // Duration of one frame in 100ns units
         int64_t frameDuration = 10000000LL / config_.video.fps;
 
+        // Anchor video to its real (QPC) capture time so it stays locked to
+        // the audio clock, which rides the same QPC. Only enforce strict
+        // monotonicity (encoders/muxers require an increasing PTS); do NOT
+        // ratchet forward by a synthetic frame duration, which would let the
+        // video clock drift ahead of audio over long recordings.
         int64_t sampleTs = relativeTs;
         if (nextVideoTimestamp_ < 0) {
-            nextVideoTimestamp_ = sampleTs;
             firstVideoTimestamp_.store(sampleTs);
-        } else if (sampleTs < nextVideoTimestamp_) {
-            sampleTs = nextVideoTimestamp_;
+        } else if (sampleTs <= lastVideoTimestamp_.load()) {
+            sampleTs = lastVideoTimestamp_.load() + 1;
         }
-        nextVideoTimestamp_ = sampleTs + frameDuration;
+        nextVideoTimestamp_ = sampleTs;  // sentinel: >=0 means initialized
         lastVideoTimestamp_.store(sampleTs);
 
         if (writeVideoFrameSurface(frame, sampleTs, frameDuration)) {

@@ -407,13 +407,14 @@ bool H264MftEncoder::processOutput(std::vector<EncodedVideoPacket>& packets)
             const int64_t sampleTimeMs = std::max<int64_t>(0, sampleTime / 10000);
             if (nextOutputTimestampMs_ < 0) {
                 packet.timestampMs = sampleTimeMs;
-                nextOutputTimestampMs_ = packet.timestampMs;
             } else {
-                packet.timestampMs = std::max(sampleTimeMs, nextOutputTimestampMs_);
+                // Keep the encoder's real sample time, enforcing only strict
+                // monotonicity. Do NOT accumulate synthetic durations, which
+                // would let the MKV video clock ratchet ahead of audio (which
+                // rides real QPC) and drift over long recordings.
+                packet.timestampMs = std::max(sampleTimeMs, nextOutputTimestampMs_ + 1);
             }
-            nextOutputTimestampMs_ += packet.durationMs;
-            nextOutputTimestampMs_ = std::max(nextOutputTimestampMs_,
-                                              packet.timestampMs + packet.durationMs);
+            nextOutputTimestampMs_ = packet.timestampMs;
             packet.keyframe = cleanPoint != 0;
             packets.push_back(std::move(packet));
         }
