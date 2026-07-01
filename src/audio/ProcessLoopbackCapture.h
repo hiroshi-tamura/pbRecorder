@@ -52,6 +52,13 @@ private:
     void releaseResources();
     void reportError(const std::string& msg);
 
+    // Free-threaded marshaler. ActivateAudioInterfaceAsync requires the
+    // completion handler to support free-threaded marshaling; without it the
+    // call fails synchronously with E_ILLEGAL_METHOD_CALL (0x8000000E) on an MTA
+    // thread — which is why per-app audio never captured anything. We aggregate
+    // the standard FTM and delegate IMarshal to it in QueryInterface.
+    IUnknown* ftm_ = nullptr;
+
     IAudioClient* audioClient_ = nullptr;
     IAudioCaptureClient* captureClient_ = nullptr;
 
@@ -65,7 +72,13 @@ private:
     std::atomic<bool> initialized_{false};
     std::atomic<ULONG> refCount_{1};
 
-    mutable std::mutex mutex_;
+    mutable std::mutex mutex_;          // guards capture state (initialize/start/stop)
+    // Separate mutex for the callbacks so reportError() can run while mutex_ is
+    // held by initialize()/start(). std::mutex is non-recursive: re-locking it on
+    // the same thread throws std::system_error (a crash), which is exactly what
+    // happened when activation failed inside initialize() and reportError() tried
+    // to re-lock mutex_.
+    mutable std::mutex callbackMutex_;
     AudioCallback audioCallback_;
     ErrorCallback errorCallback_;
 

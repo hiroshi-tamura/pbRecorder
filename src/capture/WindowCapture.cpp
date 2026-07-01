@@ -193,10 +193,18 @@ bool WindowCapture::captureFrame() {
     vf.width = static_cast<uint32_t>(outW);
     vf.height = static_cast<uint32_t>(outH);
 
-    std::lock_guard<std::mutex> lock(callbackMutex_);
-    if (frameCallback_) {
+    // Copy the callback out, then invoke it UNLOCKED: reportError() also locks
+    // callbackMutex_, and holding it across the callback would re-lock it on the
+    // same thread (std::mutex is non-recursive -> std::system_error / crash on
+    // MSVC) if the callback throws.
+    FrameCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        cb = frameCallback_;
+    }
+    if (cb) {
         try {
-            frameCallback_(vf);
+            cb(vf);
         } catch (const std::exception& e) {
             reportError(std::string("WindowCapture callback failed: ") + e.what());
             capturing_.store(false);

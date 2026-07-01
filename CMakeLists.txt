@@ -1,11 +1,24 @@
 cmake_minimum_required(VERSION 3.24)
-project(pbRecorder VERSION 0.5.8 LANGUAGES C CXX)
+project(pbRecorder VERSION 0.6.0 LANGUAGES C CXX)
 
 include(CTest)
 option(PBRECORDER_BUILD_TESTING "Build pbRecorder tests" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# MSVC-specific build settings (required for the cppwinrt WGC path and for
+# the app's Japanese UTF-8 string literals). GCC/MinGW default to UTF-8 and
+# do not need these.
+if(MSVC)
+    # /utf-8  : source + execution charset = UTF-8 (matches MinGW; prevents
+    #           mojibake in Japanese literals such as QString::fromUtf8("...")).
+    # /bigobj : cppwinrt (winrt/Windows.Graphics.Capture.h) and libmatroska
+    #           templates exceed the default COFF section limit (C1128).
+    add_compile_options(/utf-8 /bigobj)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
@@ -14,7 +27,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 # Qt6
-find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
 
 get_target_property(QT_CORE_LOCATION Qt6::Core IMPORTED_LOCATION_RELEASE)
 if(NOT QT_CORE_LOCATION)
@@ -41,6 +54,7 @@ set(WIN_LIBS
     shcore
     propsys
     mmdevapi
+    windowsapp   # WGC / C++WinRT (WindowsApp.lib): RoInitialize, activation factory
 )
 
 # Third-party: libmatroska, libopus, libvorbis
@@ -150,6 +164,7 @@ endif()
 
 # Source files
 set(CORE_SOURCES
+    src/core/DebugLog.cpp
     src/core/D3DManager.cpp
     src/core/RecordingSession.cpp
     src/core/MonitorEnumerator.cpp
@@ -160,6 +175,7 @@ set(CORE_SOURCES
 set(CAPTURE_SOURCES
     src/capture/DxgiScreenCapture.cpp
     src/capture/WindowCapture.cpp
+    src/capture/WgcWindowCapture.cpp
     src/capture/RegionCapture.cpp
     src/capture/UiElementCapture.cpp
 )
@@ -220,9 +236,15 @@ if(ASIO_AVAILABLE)
         ${ASIO_SDK_DIR}/host/pc/asiolist.cpp
     )
     # ASIO SDK needs 'interface' keyword (via objbase.h) and asiosys.h for IEEE754_64FLOAT
-    # Also must undo UNICODE since ASIO SDK uses ANSI Win32 API
+    # Also must undo UNICODE since ASIO SDK uses ANSI Win32 API.
+    # MSVC uses /FI (forced include) and /U; GCC/MinGW uses -include / -U.
+    if(MSVC)
+        set(_asio_flags "/FIobjbase.h /FIasiosys.h /UUNICODE /U_UNICODE")
+    else()
+        set(_asio_flags "-include objbase.h -include asiosys.h -UUNICODE -U_UNICODE")
+    endif()
     set_source_files_properties(${ASIO_SDK_SOURCES} PROPERTIES
-        COMPILE_FLAGS "-include objbase.h -include asiosys.h -UUNICODE -U_UNICODE"
+        COMPILE_FLAGS "${_asio_flags}"
     )
     list(APPEND ALL_SOURCES ${ASIO_SDK_SOURCES})
     list(APPEND CLI_ALL_SOURCES ${ASIO_SDK_SOURCES})
@@ -255,14 +277,16 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     _WIN32_WINNT=0x0A00
-    NTDDI_VERSION=0x0A000000
+    # NTDDI_WIN10_FE (build 20348): required for the process-loopback audio
+    # activation types (AUDIOCLIENT_ACTIVATION_PARAMS) in the MSVC Windows SDK.
+    # The per-app audio feature already requires build 20348 at runtime.
+    NTDDI_VERSION=0x0A00000B
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Widgets
     Qt6::Core
     Qt6::Gui
-    Qt6::Multimedia
     ${WIN_LIBS}
     ebml
     matroska
@@ -299,7 +323,10 @@ target_compile_definitions(pbRecorder-cli PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     _WIN32_WINNT=0x0A00
-    NTDDI_VERSION=0x0A000000
+    # NTDDI_WIN10_FE (build 20348): required for the process-loopback audio
+    # activation types (AUDIOCLIENT_ACTIVATION_PARAMS) in the MSVC Windows SDK.
+    # The per-app audio feature already requires build 20348 at runtime.
+    NTDDI_VERSION=0x0A00000B
 )
 
 target_link_libraries(pbRecorder-cli PRIVATE
@@ -312,6 +339,15 @@ target_link_libraries(pbRecorder-cli PRIVATE
     vorbisenc
     opus
 )
+
+# Emit PDBs for our targets even in Release (keeps /O2) so crash dumps resolve
+# to function names. Deps are unaffected (no rebuild of libmatroska/ogg/etc.).
+if(MSVC)
+    target_compile_options(${PROJECT_NAME} PRIVATE /Zi)
+    target_link_options(${PROJECT_NAME} PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+    target_compile_options(pbRecorder-cli PRIVATE /Zi)
+    target_link_options(pbRecorder-cli PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+endif()
 
 # Copy Qt DLLs on install
 install(TARGETS ${PROJECT_NAME} pbRecorder-cli DESTINATION bin)

@@ -53,7 +53,11 @@ private:
     std::atomic<bool> capturing_{false};
     std::atomic<bool> initialized_{false};
 
-    mutable std::mutex mutex_;
+    mutable std::mutex mutex_;          // guards capture state (initialize/start/stop)
+    // Separate mutex for callbacks: initialize()/start() hold mutex_ while calling
+    // reportError(), and std::mutex is non-recursive (re-locking throws
+    // std::system_error and crashes on MSVC). Keep callback access off mutex_.
+    mutable std::mutex callbackMutex_;
     AudioCallback audioCallback_;
     ErrorCallback errorCallback_;
 

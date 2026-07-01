@@ -11,7 +11,7 @@ int main(int argc, char* argv[]) {
 
     QCoreApplication app(argc, argv);
     app.setApplicationName("pbRecorder");
-    app.setApplicationVersion("0.5.8");
+    app.setApplicationVersion("0.6.0");
 
     int result = CliRunner::run(app.arguments());
 

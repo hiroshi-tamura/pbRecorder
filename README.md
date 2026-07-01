@@ -8,6 +8,13 @@ A feature-rich screen recorder for Windows. Uses DXGI Desktop Duplication for hi
 
 [日本語版 README](README_ja.md)
 
+## What's New in 0.6.0
+
+- **Window capture no longer includes overlapping windows** — Window mode now uses **Windows.Graphics.Capture (WGC)** instead of `PrintWindow`. WGC captures the target window's live composited surface at the OS level, so other windows layered on top are never recorded, and hardware-accelerated / GPU content (browsers, games, video players) that `PrintWindow` returned black is now captured correctly. Falls back to the previous `PrintWindow` path on Windows versions without WGC. Output is constant-frame-rate even for a static window.
+- **Per-application audio now actually works** — The process-loopback capture was failing to activate on every machine: the completion handler was missing free-threaded marshaling (`ActivateAudioInterfaceAsync` returned `E_ILLEGAL_METHOD_CALL`), the client requested a format the process-loopback device rejected without `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`, and for Store/UWP apps the wrong process id was targeted (`ApplicationFrameHost.exe`). All three are fixed, so **"▶ Captured window's app audio only"** records the target application's audio (and its child processes) as intended.
+- **Fixed a crash when starting a window recording** — A non-recursive `std::mutex` was being re-locked on the same thread (an error path locked a mutex the caller already held), which terminated the process. Fixed across all capture/audio sources.
+- **Build**: pbRecorder is now built with the MSVC toolchain (required for WGC/C++WinRT). The distribution bundles the Visual C++ runtime, so no separate install is needed — unzip and run as before. Requires Windows 10 1903+ (build 20348+ for per-app audio).
+
 ## What's New in 0.5.8
 
 - **No more audio/video drift on long recordings** — Video is now anchored to its real capture clock (the same high-resolution QPC clock the audio uses), instead of advancing by a synthetic per-frame duration. Previously the video timestamp could ratchet ahead of real time and never recover, so audio and video drifted further apart the longer you recorded. Now both streams share a single clock, so they stay in sync for the full length of the recording. Applies to all containers (MP4, WMV, MKV).

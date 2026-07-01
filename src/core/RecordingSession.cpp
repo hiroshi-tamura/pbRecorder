@@ -2,6 +2,7 @@
 #include "core/D3DManager.h"
 #include "capture/DxgiScreenCapture.h"
 #include "capture/WindowCapture.h"
+#include "capture/WgcWindowCapture.h"
 #include "capture/RegionCapture.h"
 #include "capture/UiElementCapture.h"
 #include "audio/WasapiCapture.h"
@@ -9,6 +10,7 @@
 #include "audio/AsioCapture.h"
 #include "pipeline/SinkWriterPipeline.h"
 #include "pipeline/MkvPipeline.h"
+#include "core/DebugLog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -70,6 +72,33 @@ int64_t currentQpcTime100ns()
     QueryPerformanceCounter(&now);
     return static_cast<int64_t>(
         (static_cast<double>(now.QuadPart) / static_cast<double>(freq.QuadPart)) * 10000000.0);
+}
+
+// Resolve the process that actually renders audio for a top-level window.
+// UWP/Store apps (incl. the modern Media Player / Films & TV) host their
+// content in a child "Windows.UI.Core.CoreWindow" owned by a *different* real
+// app process; the top-level ApplicationFrameWindow belongs to
+// ApplicationFrameHost.exe, which is NOT an ancestor of the app, so
+// process-loopback INCLUDE_TREE on it captures nothing. For ordinary Win32
+// windows no CoreWindow child exists and this returns the same top-level PID.
+DWORD resolveAudioRenderPid(HWND hwnd)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0) return 0;
+    struct EnumState { DWORD hostPid; DWORD realPid; } state{ pid, 0 };
+    EnumChildWindows(hwnd, [](HWND child, LPARAM lp) -> BOOL {
+        auto* st = reinterpret_cast<EnumState*>(lp);
+        wchar_t cls[64] = {};
+        if (GetClassNameW(child, cls, 64) &&
+            wcscmp(cls, L"Windows.UI.Core.CoreWindow") == 0) {
+            DWORD cpid = 0;
+            GetWindowThreadProcessId(child, &cpid);
+            if (cpid != 0 && cpid != st->hostPid) { st->realPid = cpid; return FALSE; }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&state));
+    return state.realPid ? state.realPid : pid;  // fall back to top-level PID
 }
 
 } // namespace
@@ -147,7 +176,7 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
             DWORD pid = 0;
             if (config_.capture.targetWindow &&
                 IsWindow(config_.capture.targetWindow)) {
-                GetWindowThreadProcessId(config_.capture.targetWindow, &pid);
+                pid = resolveAudioRenderPid(config_.capture.targetWindow);
             }
             if (pid == 0) {
                 onError("アプリ音声録音にはウィンドウモードで対象ウィンドウの選択が必要です");
@@ -155,6 +184,17 @@ bool RecordingSession::initialize(const RecordingConfig& config) {
             } else {
                 config_.outputAudioDevice.processId = static_cast<uint32_t>(pid);
                 config_.outputAudioDevice.id = L"process-loopback"; // non-empty sentinel
+                if (debugLogEnabled()) {
+                    char exeName[MAX_PATH] = "?";
+                    HANDLE hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                    if (hp) {
+                        DWORD sz = MAX_PATH;
+                        QueryFullProcessImageNameA(hp, 0, exeName, &sz);
+                        CloseHandle(hp);
+                    }
+                    debugLog(std::string("RecordingSession: process loopback target pid=") +
+                             std::to_string(pid) + " exe=" + exeName);
+                }
             }
         }
 
@@ -633,6 +673,13 @@ std::unique_ptr<ICaptureSource> RecordingSession::createCaptureSource(CaptureMod
         case CaptureMode::Screen:
             return std::make_unique<DxgiScreenCapture>();
         case CaptureMode::Window:
+            // Prefer Windows.Graphics.Capture (live composited content, incl.
+            // GPU-accelerated child windows PrintWindow cannot render, and never
+            // includes overlapping windows). Fall back to the PrintWindow-based
+            // path on older OSes where WGC is unavailable.
+            if (WgcWindowCapture::isSupported()) {
+                return std::make_unique<WgcWindowCapture>();
+            }
             return std::make_unique<WindowCapture>();
         case CaptureMode::Region:
             return std::make_unique<RegionCapture>();

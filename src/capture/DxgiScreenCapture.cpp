@@ -167,10 +167,19 @@ void DxgiScreenCapture::captureLoop() {
                 vf.width = width_;
                 vf.height = height_;
 
-                std::lock_guard<std::mutex> lock(callbackMutex_);
-                if (frameCallback_) {
+                // Copy the callback out, then invoke it UNLOCKED: reportError()
+                // also locks callbackMutex_, and holding it across the callback
+                // would re-lock it on the same thread (std::mutex is
+                // non-recursive -> std::system_error / crash on MSVC) if the
+                // callback throws.
+                FrameCallback cb;
+                {
+                    std::lock_guard<std::mutex> lock(callbackMutex_);
+                    cb = frameCallback_;
+                }
+                if (cb) {
                     try {
-                        frameCallback_(vf);
+                        cb(vf);
                     } catch (const std::exception& e) {
                         reportError(std::string("DxgiScreenCapture callback failed: ") + e.what());
                         running_.store(false);

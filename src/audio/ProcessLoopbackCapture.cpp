@@ -1,7 +1,10 @@
 #include "ProcessLoopbackCapture.h"
 
+#include "core/DebugLog.h"
+
 #include <cstring>
 #include <stdexcept>
+#include <string>
 
 // Process-loopback activation parameters. Use the SDK header when available,
 // otherwise define the needed types manually (some MinGW SDKs lack the header).
@@ -38,6 +41,18 @@ typedef struct {
 
 #ifndef VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK
 #define VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK L"VAD\\Process_Loopback"
+#endif
+
+// The process-loopback virtual device has no queryable mix format, so we must
+// hand it a PCM format and let the audio engine convert the app's (float)
+// render mix. That conversion only happens with AUTOCONVERTPCM — without it
+// IAudioClient::Initialize fails with AUDCLNT_E_UNSUPPORTED_FORMAT for every
+// app. (Defensive defines for SDKs that lack them.)
+#ifndef AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+#define AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM 0x80000000
+#endif
+#ifndef AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+#define AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY 0x08000000
 #endif
 
 namespace pb {
@@ -78,6 +93,17 @@ STDMETHODIMP ProcessLoopbackCapture::QueryInterface(REFIID riid, void** ppv) {
         AddRef();
         return S_OK;
     }
+    // Delegate IMarshal to the aggregated free-threaded marshaler, and claim
+    // IAgileObject (we ARE agile via the FTM), so ActivateAudioInterfaceAsync
+    // accepts this handler across apartments (else E_ILLEGAL_METHOD_CALL).
+    if (riid == __uuidof(IMarshal) && ftm_) {
+        return ftm_->QueryInterface(riid, ppv);
+    }
+    if (riid == __uuidof(IAgileObject)) {
+        *ppv = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
+        AddRef();
+        return S_OK;
+    }
     *ppv = nullptr;
     return E_NOINTERFACE;
 }
@@ -114,6 +140,27 @@ STDMETHODIMP ProcessLoopbackCapture::ActivateCompleted(
 // ============================================================================
 bool ProcessLoopbackCapture::activateInterface(uint32_t processId,
                                                bool excludeProcessTree) {
+    // Aggregate a free-threaded marshaler so this completion handler is agile.
+    // Required by ActivateAudioInterfaceAsync (else E_ILLEGAL_METHOD_CALL).
+    if (!ftm_) {
+        HRESULT hrFtm = CoCreateFreeThreadedMarshaler(
+            static_cast<IActivateAudioInterfaceCompletionHandler*>(this), &ftm_);
+        if (FAILED(hrFtm)) {
+            debugLog("ProcessLoopback: CoCreateFreeThreadedMarshaler failed hr=" + hrToString(hrFtm));
+            reportError("Process loopback: failed to create marshaler: " + hrToString(hrFtm));
+            return false;
+        }
+    }
+
+    if (debugLogEnabled()) {
+        APTTYPE at{}; APTTYPEQUALIFIER q{};
+        HRESULT ah = CoGetApartmentType(&at, &q);
+        debugLog("ProcessLoopback: apartment hr=" + hrToString(ah) +
+                 " type=" + std::to_string(static_cast<int>(at)) +
+                 " qual=" + std::to_string(static_cast<int>(q)) +
+                 " (0=STA,1=MTA,...)");
+    }
+
     AUDIOCLIENT_ACTIVATION_PARAMS params{};
     params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     params.ProcessLoopbackParams.TargetProcessId = static_cast<DWORD>(processId);
@@ -135,18 +182,24 @@ bool ProcessLoopbackCapture::activateInterface(uint32_t processId,
         this,
         &asyncOp);
     if (FAILED(hr)) {
+        debugLog("ProcessLoopback: ActivateAudioInterfaceAsync failed hr=" + hrToString(hr));
         reportError("ActivateAudioInterfaceAsync failed: " + hrToString(hr));
         return false;
     }
 
     // Block until ActivateCompleted runs (it sets audioClient_/activateResult_).
-    WaitForSingleObject(activateDoneEvent_, 5000);
+    DWORD waitRc = WaitForSingleObject(activateDoneEvent_, 5000);
     safeRelease(asyncOp);
 
     if (FAILED(activateResult_) || !audioClient_) {
+        debugLog("ProcessLoopback: activation failed activateResult=" + hrToString(activateResult_) +
+                 " audioClient=" + std::string(audioClient_ ? "yes" : "null") +
+                 " wait=" + std::to_string(waitRc));
         reportError("Process loopback activation failed: " + hrToString(activateResult_));
         return false;
     }
+    debugLog("ProcessLoopback: activation OK for pid=" + std::to_string(processId) +
+             " (includeTree=" + (excludeProcessTree ? "no" : "yes") + ")");
     return true;
 }
 
@@ -187,8 +240,9 @@ bool ProcessLoopbackCapture::initialize(const AudioDeviceInfo& device) {
 
     HRESULT hr = audioClient_->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-        200000,  // 20ms buffer
+        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+        0,   // hnsBufferDuration: 0 => engine sizes the event-driven shared buffer (canonical)
         0,
         &wfx,
         nullptr);
@@ -210,6 +264,9 @@ bool ProcessLoopbackCapture::initialize(const AudioDeviceInfo& device) {
         return false;
     }
 
+    debugLog("ProcessLoopback: initialized OK, format=" +
+             std::to_string(sampleRate_) + "Hz/" + std::to_string(bitsPerSample_) +
+             "bit/" + std::to_string(channelCount_) + "ch");
     initialized_ = true;
     return true;
 }
@@ -261,11 +318,37 @@ void ProcessLoopbackCapture::captureThread() {
     ScopedCom com;
     HANDLE waitHandles[2] = { eventHandle_, stopEvent_ };
 
+    // Diagnostics: track how much real (non-silent) audio actually flows.
+    uint64_t dbgPackets = 0;
+    uint64_t dbgFrames = 0;
+    uint64_t dbgSilentFrames = 0;
+    uint64_t dbgTimeouts = 0;
+    int dbgPeak = 0;
+    ULONGLONG dbgLastReport = GetTickCount64();
+
+    // Always-on escalation: if we never receive ANY audio packet for a sustained
+    // period, the process is not being tapped at all (wrong PID, or a WASAPI
+    // exclusive-mode app that bypasses the shared engine). Surface a one-time,
+    // non-fatal warning so this stops failing invisibly.
+    const ULONGLONG runStartTick = GetTickCount64();
+    uint64_t everPackets = 0;
+    bool warnedNoAudio = false;
+
     while (capturing_) {
         DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, 2000);
         if (waitResult == WAIT_OBJECT_0 + 1) break; // stop
         if (waitResult == WAIT_TIMEOUT) {
             if (!capturing_) break;
+            ++dbgTimeouts;
+            if (debugLogEnabled()) {
+                debugLog("ProcessLoopback: WAIT_TIMEOUT (no audio event for 2s), totalTimeouts=" +
+                         std::to_string(dbgTimeouts));
+            }
+            if (!warnedNoAudio && everPackets == 0 &&
+                GetTickCount64() - runStartTick > 8000) {
+                warnedNoAudio = true;
+                reportError("対象アプリの音声を検出できません（別プロセスで再生 / 排他モード音声 / 再生されていない可能性）");
+            }
             continue;
         }
         if (waitResult == WAIT_FAILED) {
@@ -301,6 +384,7 @@ void ProcessLoopbackCapture::captureThread() {
             } guard{captureClient_, numFrames, true};
 
             if (numFrames > 0) {
+                ++everPackets;  // we ARE tapping the process (silent or not)
                 int64_t timestamp = 0;
                 const bool tsError = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0;
                 if (qpcPosition > 0 && !tsError) {
@@ -324,15 +408,41 @@ void ProcessLoopbackCapture::captureThread() {
 
                 uint32_t outSize = numFrames * channelCount_ * (bitsPerSample_ / 8);
                 buffer.data.resize(outSize);
-                if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+                const bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+                if (silent) {
                     std::memset(buffer.data.data(), 0, outSize);
                 } else {
                     std::memcpy(buffer.data.data(), data, outSize);
                 }
 
+                if (debugLogEnabled()) {
+                    ++dbgPackets;
+                    dbgFrames += numFrames;
+                    if (silent) {
+                        dbgSilentFrames += numFrames;
+                    } else {
+                        const int16_t* s = reinterpret_cast<const int16_t*>(buffer.data.data());
+                        const size_t n = outSize / sizeof(int16_t);
+                        for (size_t i = 0; i < n; ++i) {
+                            int a = std::abs(static_cast<int>(s[i]));
+                            if (a > dbgPeak) dbgPeak = a;
+                        }
+                    }
+                    ULONGLONG now = GetTickCount64();
+                    if (now - dbgLastReport >= 1000) {
+                        debugLog("ProcessLoopback: 1s stats packets=" + std::to_string(dbgPackets) +
+                                 " frames=" + std::to_string(dbgFrames) +
+                                 " silentFrames=" + std::to_string(dbgSilentFrames) +
+                                 " peak16=" + std::to_string(dbgPeak) +
+                                 " (peak 0 => no real audio from this process)");
+                        dbgPackets = 0; dbgFrames = 0; dbgSilentFrames = 0; dbgPeak = 0;
+                        dbgLastReport = now;
+                    }
+                }
+
                 AudioCallback cb;
                 {
-                    std::lock_guard<std::mutex> lock(mutex_);
+                    std::lock_guard<std::mutex> lock(callbackMutex_);
                     cb = audioCallback_;
                 }
                 if (cb) {
@@ -368,11 +478,11 @@ void ProcessLoopbackCapture::captureThread() {
 // Setters / Getters
 // ============================================================================
 void ProcessLoopbackCapture::setAudioCallback(AudioCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     audioCallback_ = std::move(callback);
 }
 void ProcessLoopbackCapture::setErrorCallback(ErrorCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     errorCallback_ = std::move(callback);
 }
 int ProcessLoopbackCapture::getChannelCount() const { return channelCount_; }
@@ -386,6 +496,7 @@ bool ProcessLoopbackCapture::isCapturing() const { return capturing_; }
 void ProcessLoopbackCapture::releaseResources() {
     safeRelease(captureClient_);
     safeRelease(audioClient_);
+    safeRelease(ftm_);
     if (eventHandle_) { CloseHandle(eventHandle_); eventHandle_ = nullptr; }
     if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
     if (activateDoneEvent_) { CloseHandle(activateDoneEvent_); activateDoneEvent_ = nullptr; }
@@ -395,7 +506,7 @@ void ProcessLoopbackCapture::releaseResources() {
 void ProcessLoopbackCapture::reportError(const std::string& msg) {
     ErrorCallback cb;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(callbackMutex_);
         cb = errorCallback_;
     }
     if (cb) cb(msg);

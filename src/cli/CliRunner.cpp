@@ -607,7 +607,14 @@ int CliRunner::run(const QStringList& args) {
                 captureDevices.push_back(d);
         }
 
-        if (!audioOutSpec.isEmpty()) {
+        if (audioOutSpec == "proc-loopback") {
+            // Diagnostic: per-application (process loopback) audio, GUI feature
+            // exposed to the CLI for testing. Requires window mode; PID is
+            // resolved from the target window in RecordingSession.
+            config.outputAudioDevice.type = pb::AudioDeviceType::ProcessLoopback;
+            config.outputAudioDevice.id = L"process-loopback";
+            config.useOutputAudio = true;
+        } else if (!audioOutSpec.isEmpty()) {
             if (!findAudioDevice(renderDevices, audioOutSpec, config.outputAudioDevice)) {
                 err() << "Error: output audio device '" << audioOutSpec << "' not found" << Qt::endl;
                 return 1;

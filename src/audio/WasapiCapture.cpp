@@ -509,7 +509,7 @@ void WasapiCapture::captureThread() {
                 // Deliver to callback
                 AudioCallback cb;
                 {
-                    std::lock_guard<std::mutex> lock(mutex_);
+                    std::lock_guard<std::mutex> lock(callbackMutex_);
                     cb = audioCallback_;
                 }
                 if (cb) {
@@ -551,12 +551,12 @@ void WasapiCapture::captureThread() {
 // Setters / Getters
 // ============================================================================
 void WasapiCapture::setAudioCallback(AudioCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     audioCallback_ = std::move(callback);
 }
 
 void WasapiCapture::setErrorCallback(ErrorCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     errorCallback_ = std::move(callback);
 }
 
@@ -597,7 +597,7 @@ void WasapiCapture::releaseResources() {
 void WasapiCapture::reportError(const std::string& msg) {
     ErrorCallback cb;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(callbackMutex_);
         cb = errorCallback_;
     }
     if (cb) {

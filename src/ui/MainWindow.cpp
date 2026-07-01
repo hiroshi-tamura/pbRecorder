@@ -378,8 +378,11 @@ struct MainWindow::MeteringSession {
             }
         }
 
-        // Get IAudioMeterInformation
-        hr = device->Activate(IID_IAudioMeterInformation, CLSCTX_ALL,
+        // Get IAudioMeterInformation. Use __uuidof (compile-time GUID from the
+        // interface's __declspec(uuid)) rather than the IID_ symbol: on MSVC the
+        // SDK declares IID_IAudioMeterInformation as EXTERN_C but provides no lib
+        // definition (LNK2019), while __uuidof works on both MSVC and MinGW.
+        hr = device->Activate(__uuidof(IAudioMeterInformation), CLSCTX_ALL,
                               nullptr, reinterpret_cast<void**>(&session->meter));
         device->Release();
 
